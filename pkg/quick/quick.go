@@ -30,7 +30,7 @@ import (
 	"sync"
 
 	"github.com/fatih/structs"
-	"github.com/minio/minio/pkg/safe"
+	"github.com/mf-00/minio/pkg/safe"
 )
 
 // Config - generic config interface functions

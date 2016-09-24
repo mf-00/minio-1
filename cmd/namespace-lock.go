@@ -50,6 +50,7 @@ func initDsyncNodes(disks []string, port int) error {
 				path:        pathutil.Join(lockRPCPath, disk[idx+1:]),
 				loginMethod: "Dsync.LoginHandler",
 			}))
+
 			if isLocalStorage(disk) && myNode == -1 {
 				myNode = len(clnts) - 1
 			}

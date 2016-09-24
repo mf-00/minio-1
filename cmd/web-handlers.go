@@ -35,6 +35,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/rpc/v2/json2"
+	"github.com/mf-00/minio/myauthboss"
 	"github.com/minio/minio-go/pkg/policy"
 	"github.com/minio/miniobrowser"
 )
@@ -733,4 +734,21 @@ func presignedGet(host, bucket, object string) string {
 
 	// Construct the final presigned URL.
 	return host + path + "?" + query + "&" + "X-Amz-Signature=" + signature
+}
+
+func (web *webAPIHandlers) _defaultHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "<h1>Hello from Cisco Shipped testing!</h1>\n")
+}
+
+func (web *webAPIHandlers) redirectMinioHandler(w http.ResponseWriter, r *http.Request) {
+	jwt, err := newJWT(defaultWebTokenExpiry)
+	if err != nil {
+		fmt.Fprintf(w, "<h1>Failed to get minio token:%s</h1>\n", err)
+	}
+
+	token, err := jwt.GenerateToken(jwt.credential.AccessKeyID)
+	if err != nil {
+		fmt.Fprintf(w, "<h1>Failed to get minio token:%s</h1>\n", err)
+	}
+	myauthboss.RedirectMinio(w, r, token)
 }

@@ -42,12 +42,12 @@ func skipContentSha256Cksum(r *http.Request) bool {
 // isValidRegion - verify if incoming region value is valid with configured Region.
 func isValidRegion(reqRegion string, confRegion string) bool {
 	if confRegion == "" || confRegion == "US" {
-		confRegion = "us-east-1"
+		confRegion = defaultRegion
 	}
 	// Some older s3 clients set region as "US" instead of
 	// "us-east-1", handle it.
 	if reqRegion == "US" {
-		reqRegion = "us-east-1"
+		reqRegion = defaultRegion
 	}
 	return reqRegion == confRegion
 }

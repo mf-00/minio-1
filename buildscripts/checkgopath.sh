@@ -26,11 +26,11 @@ _init() {
 main() {
     echo "Checking if project is at ${GOPATH}"
     for minio in $(echo ${GOPATH} | tr ':' ' '); do
-        if [ ! -d ${minio}/src/github.com/minio/minio ]; then
+        if [ ! -d ${minio}/src/github.com/mf-00/minio ]; then
             echo "Project not found in ${minio}, please follow instructions provided at https://github.com/minio/minio/blob/master/CONTRIBUTING.md#setup-your-minio-github-repository" \
                 && exit 1
         fi
-        if [ "x${minio}/src/github.com/minio/minio" != "x${PWD}" ]; then
+        if [ "x${minio}/src/github.com/mf-00/minio" != "x${PWD}" ]; then
             echo "Build outside of ${minio}, two source checkouts found. Exiting." && exit 1
         fi
     done

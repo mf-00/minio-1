@@ -29,7 +29,7 @@ import (
 	"sync/atomic"
 	"syscall"
 
-	"github.com/minio/minio/pkg/disk"
+	"github.com/mf-00/minio/pkg/disk"
 )
 
 const (

@@ -25,7 +25,8 @@ import (
 	router "github.com/gorilla/mux"
 	jsonrpc "github.com/gorilla/rpc/v2"
 	"github.com/gorilla/rpc/v2/json2"
-	"github.com/minio/miniobrowser"
+	"github.com/mf-00/minio/myauthboss"
+	"github.com/mf-00/miniobrowser"
 )
 
 // webAPI container for Web API.
@@ -75,6 +76,15 @@ func registerWebRouter(mux *router.Router, web *webAPIHandlers) {
 	webBrowserRouter.Methods("POST").Path("/webrpc").Handler(webRPC)
 	webBrowserRouter.Methods("PUT").Path("/upload/{bucket}/{object:.+}").HandlerFunc(web.Upload)
 	webBrowserRouter.Methods("GET").Path("/download/{bucket}/{object:.+}").Queries("token", "{token:.*}").HandlerFunc(web.Download)
+
+	// 2016.9.18 Mingfeng: Move authboss setup from api-router to here
+	myauthboss.SetupStorer()
+	myauthboss.SetupAuthboss()
+	mux.Path("/").HandlerFunc(web._defaultHandler)
+	mux.PathPrefix("/auth").Handler(myauthboss.GetAuthboss().NewRouter())
+
+	// 2016.9.18 Mingfeng: Redirect from authboss to minio
+	mux.Path("/redirectMinio").HandlerFunc(web.redirectMinioHandler)
 
 	// Add compression for assets.
 	compressedAssets := handlers.CompressHandler(http.StripPrefix(reservedBucket, http.FileServer(assetFS())))

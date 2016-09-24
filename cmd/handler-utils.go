@@ -52,7 +52,7 @@ func isValidLocationConstraint(r *http.Request) (s3Error APIErrorCode) {
 	if incomingRegion == "" {
 		// Location constraint is empty for region "us-east-1",
 		// in accordance with protocol.
-		incomingRegion = "us-east-1"
+		incomingRegion = defaultRegion
 	}
 	// Return errInvalidRegion if location constraint does not match
 	// with configured region.

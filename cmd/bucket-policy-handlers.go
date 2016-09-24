@@ -24,8 +24,8 @@ import (
 	"net/http"
 
 	mux "github.com/gorilla/mux"
+	"github.com/mf-00/minio/pkg/wildcard"
 	"github.com/minio/minio-go/pkg/set"
-	"github.com/minio/minio/pkg/wildcard"
 )
 
 // maximum supported access policy size.

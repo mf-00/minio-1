@@ -21,8 +21,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/mf-00/minio/pkg/quick"
 	"github.com/minio/mc/pkg/console"
-	"github.com/minio/minio/pkg/quick"
 )
 
 func migrateConfig() error {
@@ -102,7 +102,7 @@ func migrateV2ToV3() error {
 	srvConfig.Region = cv2.Credentials.Region
 	if srvConfig.Region == "" {
 		// Region needs to be set for AWS Signature V4.
-		srvConfig.Region = "us-east-1"
+		srvConfig.Region = defaultRegion
 	}
 	srvConfig.Logger.Console = consoleLogger{
 		Enable: true,
@@ -166,7 +166,7 @@ func migrateV3ToV4() error {
 	srvConfig.Region = cv3.Region
 	if srvConfig.Region == "" {
 		// Region needs to be set for AWS Signature Version 4.
-		srvConfig.Region = "us-east-1"
+		srvConfig.Region = defaultRegion
 	}
 	srvConfig.Logger.Console = cv3.Logger.Console
 	srvConfig.Logger.File = cv3.Logger.File
@@ -212,7 +212,7 @@ func migrateV4ToV5() error {
 	srvConfig.Region = cv4.Region
 	if srvConfig.Region == "" {
 		// Region needs to be set for AWS Signature Version 4.
-		srvConfig.Region = "us-east-1"
+		srvConfig.Region = defaultRegion
 	}
 	srvConfig.Logger.Console = cv4.Logger.Console
 	srvConfig.Logger.File = cv4.Logger.File
@@ -261,7 +261,7 @@ func migrateV5ToV6() error {
 	srvConfig.Region = cv5.Region
 	if srvConfig.Region == "" {
 		// Region needs to be set for AWS Signature Version 4.
-		srvConfig.Region = "us-east-1"
+		srvConfig.Region = defaultRegion
 	}
 	srvConfig.Logger.Console = cv5.Logger.Console
 	srvConfig.Logger.File = cv5.Logger.File
@@ -337,7 +337,7 @@ func migrateV6ToV7() error {
 	srvConfig.Region = cv6.Region
 	if srvConfig.Region == "" {
 		// Region needs to be set for AWS Signature Version 4.
-		srvConfig.Region = "us-east-1"
+		srvConfig.Region = defaultRegion
 	}
 	srvConfig.Logger.Console = cv6.Logger.Console
 	srvConfig.Logger.File = cv6.Logger.File

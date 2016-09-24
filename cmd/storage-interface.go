@@ -16,7 +16,7 @@
 
 package cmd
 
-import "github.com/minio/minio/pkg/disk"
+import "github.com/mf-00/minio/pkg/disk"
 
 // StorageAPI interface.
 type StorageAPI interface {

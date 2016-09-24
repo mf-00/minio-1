@@ -265,8 +265,8 @@ func generateListBucketsResponse(buckets []BucketInfo) ListBucketsResponse {
 	var data = ListBucketsResponse{}
 	var owner = Owner{}
 
-	owner.ID = "minio"
-	owner.DisplayName = "minio"
+	owner.ID = newgo
+	owner.DisplayName = newgo
 
 	for _, bucket := range buckets {
 		var listbucket = Bucket{}
@@ -288,8 +288,8 @@ func generateListObjectsV1Response(bucket, prefix, marker, delimiter string, max
 	var owner = Owner{}
 	var data = ListObjectsResponse{}
 
-	owner.ID = "minio"
-	owner.DisplayName = "minio"
+	owner.ID = newgo
+	owner.DisplayName = newgo
 
 	for _, object := range resp.Objects {
 		var content = Object{}
@@ -334,8 +334,8 @@ func generateListObjectsV2Response(bucket, prefix, token, startAfter, delimiter 
 	var data = ListObjectsV2Response{}
 
 	if fetchOwner {
-		owner.ID = "minio"
-		owner.DisplayName = "minio"
+		owner.ID = newgo
+		owner.DisplayName = newgo
 	}
 
 	for _, object := range resp.Objects {
@@ -408,10 +408,10 @@ func generateListPartsResponse(partsInfo ListPartsInfo) ListPartsResponse {
 	listPartsResponse.Key = partsInfo.Object
 	listPartsResponse.UploadID = partsInfo.UploadID
 	listPartsResponse.StorageClass = "STANDARD"
-	listPartsResponse.Initiator.ID = "minio"
-	listPartsResponse.Initiator.DisplayName = "minio"
-	listPartsResponse.Owner.ID = "minio"
-	listPartsResponse.Owner.DisplayName = "minio"
+	listPartsResponse.Initiator.ID = newgo
+	listPartsResponse.Initiator.DisplayName = newgo
+	listPartsResponse.Owner.ID = newgo
+	listPartsResponse.Owner.DisplayName = newgo
 
 	listPartsResponse.MaxParts = partsInfo.MaxParts
 	listPartsResponse.PartNumberMarker = partsInfo.PartNumberMarker

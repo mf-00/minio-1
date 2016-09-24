@@ -17,8 +17,9 @@
 package cmd
 
 import (
-	"github.com/minio/minio/pkg/disk"
 	"sync"
+
+	"github.com/mf-00/minio/pkg/disk"
 )
 
 // naughtyDisk wraps a POSIX disk and returns programmed errors

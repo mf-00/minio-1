@@ -19,9 +19,10 @@ package cmd
 import (
 	"time"
 
-	"github.com/fatih/color"
-	"github.com/minio/minio/pkg/objcache"
 	"os"
+
+	"github.com/fatih/color"
+	"github.com/mf-00/minio/pkg/objcache"
 )
 
 // Global constants for Minio.
@@ -74,6 +75,11 @@ var (
 var (
 	colorBlue = color.New(color.FgBlue).SprintfFunc()
 	colorBold = color.New(color.Bold).SprintFunc()
+)
+
+var (
+	newgo         = "newgo"
+	defaultRegion = "us-east-1"
 )
 
 // fetch from environment variables and set the global values related to locks.

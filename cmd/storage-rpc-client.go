@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/minio/minio/pkg/disk"
+	"github.com/mf-00/minio/pkg/disk"
 )
 
 type networkStorage struct {

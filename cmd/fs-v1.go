@@ -26,7 +26,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/minio/minio/pkg/mimedb"
+	"github.com/mf-00/minio/pkg/mimedb"
 )
 
 // fsObjects - Implements fs object layer.
