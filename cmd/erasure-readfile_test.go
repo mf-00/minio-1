@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mf-00/minio/pkg/bpool"
+	"github.com/mf-00/newgo/pkg/bpool"
 )
 import "reflect"
 

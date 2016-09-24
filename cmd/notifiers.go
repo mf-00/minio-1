@@ -20,7 +20,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/mf-00/minio/pkg/wildcard"
+	"github.com/mf-00/newgo/pkg/wildcard"
 )
 
 // SQS type.

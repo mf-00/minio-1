@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/mf-00/minio/pkg/disk"
-	"github.com/mf-00/minio/pkg/objcache"
+	"github.com/mf-00/newgo/pkg/disk"
+	"github.com/mf-00/newgo/pkg/objcache"
 	"github.com/minio/minio-go/pkg/set"
 )
 

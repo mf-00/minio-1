@@ -22,7 +22,7 @@ import (
 	"os"
 
 	"github.com/fatih/color"
-	"github.com/mf-00/minio/pkg/objcache"
+	"github.com/mf-00/newgo/pkg/objcache"
 )
 
 // Global constants for Minio.

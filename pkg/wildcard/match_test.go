@@ -19,7 +19,7 @@ package wildcard_test
 import (
 	"testing"
 
-	"github.com/mf-00/minio/pkg/wildcard"
+	"github.com/mf-00/newgo/pkg/wildcard"
 )
 
 // TestMatch - Tests validate the logic of wild card matching.

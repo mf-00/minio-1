@@ -25,7 +25,7 @@ import (
 	"time"
 
 	router "github.com/gorilla/mux"
-	"github.com/mf-00/minio/pkg/disk"
+	"github.com/mf-00/newgo/pkg/disk"
 )
 
 // Storage server implements rpc primitives to facilitate exporting a

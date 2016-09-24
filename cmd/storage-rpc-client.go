@@ -24,7 +24,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mf-00/minio/pkg/disk"
+	"github.com/mf-00/newgo/pkg/disk"
 )
 
 type networkStorage struct {

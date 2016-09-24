@@ -20,7 +20,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/mf-00/minio/pkg/quick"
+	"github.com/mf-00/newgo/pkg/quick"
 )
 
 // serverConfigV7 server configuration version '7'.

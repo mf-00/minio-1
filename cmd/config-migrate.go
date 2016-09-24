@@ -21,7 +21,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mf-00/minio/pkg/quick"
+	"github.com/mf-00/newgo/pkg/quick"
 	"github.com/minio/mc/pkg/console"
 )
 

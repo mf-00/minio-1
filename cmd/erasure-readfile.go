@@ -23,7 +23,7 @@ import (
 	"sync"
 
 	"github.com/klauspost/reedsolomon"
-	"github.com/mf-00/minio/pkg/bpool"
+	"github.com/mf-00/newgo/pkg/bpool"
 )
 
 // isSuccessDecodeBlocks - do we have all the blocks to be

@@ -35,9 +35,9 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/rpc/v2/json2"
-	"github.com/mf-00/minio/myauthboss"
+	"github.com/mf-00/newgo/myauthboss"
+	miniobrowser "github.com/mf-00/newgobrowser"
 	"github.com/minio/minio-go/pkg/policy"
-	"github.com/minio/miniobrowser"
 )
 
 // isJWTReqAuthenticated validates if any incoming request to be a

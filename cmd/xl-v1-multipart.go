@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mf-00/minio/pkg/mimedb"
+	"github.com/mf-00/newgo/pkg/mimedb"
 	"github.com/skyrings/skyring-common/tools/uuid"
 )
 

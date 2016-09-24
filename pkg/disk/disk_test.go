@@ -21,7 +21,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/mf-00/minio/pkg/disk"
+	"github.com/mf-00/newgo/pkg/disk"
 
 	. "gopkg.in/check.v1"
 )
