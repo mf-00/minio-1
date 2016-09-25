@@ -12,21 +12,20 @@ import (
 	"path/filepath"
 	"time"
 
-	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
-	"github.com/mf-00/authboss/authboss"
 	_ "github.com/mf-00/authboss/auth"
+	"github.com/mf-00/authboss/authboss"
 	_ "github.com/mf-00/authboss/confirm"
 	_ "github.com/mf-00/authboss/lock"
 	aboauth "github.com/mf-00/authboss/oauth2"
 	_ "github.com/mf-00/authboss/recover"
 	_ "github.com/mf-00/authboss/register"
 	_ "github.com/mf-00/authboss/remember"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 
 	"github.com/aarondl/tpl"
 	"github.com/gorilla/securecookie"
 	"github.com/gorilla/sessions"
-	"github.com/justinas/nosurf"
 )
 
 var funcs = template.FuncMap{
@@ -91,7 +90,8 @@ func SetupAuthboss() {
 
 	ab.XSRFName = "csrf_token"
 	ab.XSRFMaker = func(_ http.ResponseWriter, r *http.Request) string {
-		return nosurf.Token(r)
+		//return nosurf.Token(r)
+		return ""
 	}
 
 	ab.CookieStoreMaker = NewCookieStorer
@@ -149,7 +149,7 @@ func RedirectMinio(w http.ResponseWriter, r *http.Request, minioToken string) {
 }
 
 func mustRender(w http.ResponseWriter, r *http.Request, name string, data authboss.HTMLData) {
-	data.MergeKV("csrf_token", nosurf.Token(r))
+	//data.MergeKV("csrf_token", nosurf.Token(r))
 	err := templates.Render(w, name, data)
 	if err == nil {
 		return

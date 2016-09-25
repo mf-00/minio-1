@@ -126,11 +126,6 @@
 			"revisionTime": "2016-08-18T00:31:20Z"
 		},
 		{
-			"path": "github.com/minio/miniobrowser",
-			"revision": "2e74c097f04fd7927d46fee6482d41e7b5cbf830",
-			"revisionTime": "2016-07-02T02:15:29-07:00"
-		},
-		{
 			"checksumSHA1": "GOSe2XEQI4AYwrMoLZu8vtmzkJM=",
 			"path": "github.com/minio/redigo/redis",
 			"revision": "5e2117cd32d677a36dcd8c9c83776a065555653b",
@@ -220,5 +215,5 @@
 			"revisionTime": "2016-07-16T10:42:39Z"
 		}
 	],
-	"rootPath": "github.com/minio/minio"
+	"rootPath": "github.com/mf-00/newgo"
 }
