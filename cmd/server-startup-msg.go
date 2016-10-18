@@ -17,10 +17,14 @@
 package cmd
 
 import (
+	"crypto/x509"
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
+	"time"
 
+	humanize "github.com/dustin/go-humanize"
 	"github.com/minio/mc/pkg/console"
 )
 
@@ -44,6 +48,17 @@ func printStartupMessage(endPoints []string) {
 	printServerCommonMsg(endPoints)
 	printCLIAccessMsg(endPoints[0])
 	printObjectAPIMsg()
+
+	objAPI := newObjectLayerFn()
+	if objAPI != nil {
+		printStorageInfo(objAPI.StorageInfo())
+	}
+
+	if isSSL() {
+		certs, err := readCertificateChain()
+		fatalIf(err, "Unable to read certificate chain.")
+		printCertificateMsg(certs)
+	}
 }
 
 // Prints common server startup message. Prints credential, region and browser access.
@@ -58,7 +73,11 @@ func printServerCommonMsg(endPoints []string) {
 	// Colorize the message and print.
 	console.Println(colorBlue("\nEndpoint: ") + colorBold(fmt.Sprintf(getFormatStr(len(endPointStr), 1), endPointStr)))
 	console.Println(colorBlue("AccessKey: ") + colorBold(fmt.Sprintf("%s ", cred.AccessKeyID)))
-	console.Println(colorBlue("SecretKey: ") + colorBold(fmt.Sprintf("%s ", cred.SecretAccessKey)))
+	secretKey := cred.SecretAccessKey
+	if os.Getenv("MINIO_SECURE_CONSOLE") == "0" {
+		secretKey = "*REDACTED*"
+	}
+	console.Println(colorBlue("SecretKey: ") + colorBold(fmt.Sprintf("%s ", secretKey)))
 	console.Println(colorBlue("Region: ") + colorBold(fmt.Sprintf(getFormatStr(len(region), 3), region)))
 	printEventNotifiers()
 
@@ -73,10 +92,10 @@ func printEventNotifiers() {
 		return
 	}
 	arnMsg := colorBlue("SQS ARNs: ")
-	if len(globalEventNotifier.queueTargets) == 0 {
+	if len(globalEventNotifier.external.targets) == 0 {
 		arnMsg += colorBold(fmt.Sprintf(getFormatStr(len("<none>"), 1), "<none>"))
 	}
-	for queueArn := range globalEventNotifier.queueTargets {
+	for queueArn := range globalEventNotifier.external.targets {
 		arnMsg += colorBold(fmt.Sprintf(getFormatStr(len(queueArn), 1), queueArn))
 	}
 	console.Println(arnMsg)
@@ -90,11 +109,15 @@ func printCLIAccessMsg(endPoint string) {
 
 	// Configure 'mc', following block prints platform specific information for minio client.
 	console.Println(colorBlue("\nCommand-line Access: ") + mcQuickStartGuide)
+	secretKey := cred.SecretAccessKey
+	if os.Getenv("MINIO_SECURE_CONSOLE") == "0" {
+		secretKey = "*REDACTED*"
+	}
 	if runtime.GOOS == "windows" {
-		mcMessage := fmt.Sprintf("$ mc.exe config host add myminio %s %s %s", endPoint, cred.AccessKeyID, cred.SecretAccessKey)
+		mcMessage := fmt.Sprintf("$ mc.exe config host add myminio %s %s %s", endPoint, cred.AccessKeyID, secretKey)
 		console.Println(fmt.Sprintf(getFormatStr(len(mcMessage), 3), mcMessage))
 	} else {
-		mcMessage := fmt.Sprintf("$ mc config host add myminio %s %s %s", endPoint, cred.AccessKeyID, cred.SecretAccessKey)
+		mcMessage := fmt.Sprintf("$ mc config host add myminio %s %s %s", endPoint, cred.AccessKeyID, secretKey)
 		console.Println(fmt.Sprintf(getFormatStr(len(mcMessage), 3), mcMessage))
 	}
 }
@@ -106,4 +129,49 @@ func printObjectAPIMsg() {
 	console.Println(colorBlue("   Java: ") + fmt.Sprintf(getFormatStr(len(javaQuickStartGuide), 6), javaQuickStartGuide))
 	console.Println(colorBlue("   Python: ") + fmt.Sprintf(getFormatStr(len(pyQuickStartGuide), 4), pyQuickStartGuide))
 	console.Println(colorBlue("   JavaScript: ") + jsQuickStartGuide)
+}
+
+// Get formatted disk/storage info message.
+func getStorageInfoMsg(storageInfo StorageInfo) string {
+	msg := fmt.Sprintf("%s %s Free, %s Total", colorBlue("Drive Capacity:"),
+		humanize.IBytes(uint64(storageInfo.Free)),
+		humanize.IBytes(uint64(storageInfo.Total)))
+	diskInfo := fmt.Sprintf(" %d Online, %d Offline. We can withstand [%d] more drive failure(s).",
+		storageInfo.Backend.OnlineDisks,
+		storageInfo.Backend.OfflineDisks,
+		storageInfo.Backend.ReadQuorum,
+	)
+	if storageInfo.Backend.Type == XL {
+		msg += colorBlue("\nStatus:") + fmt.Sprintf(getFormatStr(len(diskInfo), 8), diskInfo)
+	}
+	return msg
+}
+
+// Prints startup message of storage capacity and erasure information.
+func printStorageInfo(storageInfo StorageInfo) {
+	console.Println()
+	console.Println(getStorageInfoMsg(storageInfo))
+}
+
+// Prints certificate expiry date warning
+func getCertificateChainMsg(certs []*x509.Certificate) string {
+	msg := colorBlue("\nCertificate expiry info:\n")
+	totalCerts := len(certs)
+	var expiringCerts int
+	for i := totalCerts - 1; i >= 0; i-- {
+		cert := certs[i]
+		if cert.NotAfter.Before(time.Now().UTC().Add(globalMinioCertExpireWarnDays)) {
+			expiringCerts++
+			msg += fmt.Sprintf(colorBold("#%d %s will expire on %s\n"), expiringCerts, cert.Subject.CommonName, cert.NotAfter)
+		}
+	}
+	if expiringCerts > 0 {
+		return msg
+	}
+	return ""
+}
+
+// Prints the certificate expiry message.
+func printCertificateMsg(certs []*x509.Certificate) {
+	console.Println(getCertificateChainMsg(certs))
 }

@@ -33,6 +33,17 @@ const (
 	bucketMetaPrefix = "buckets"
 )
 
+// Global object layer mutex, used for safely updating object layer.
+var globalObjLayerMutex *sync.Mutex
+
+// Global object layer, only accessed by newObjectLayerFn().
+var globalObjectAPI ObjectLayer
+
+func init() {
+	// Initialize this once per server initialization.
+	globalObjLayerMutex = &sync.Mutex{}
+}
+
 // isErrIgnored should we ignore this error?, takes a list of errors which can be ignored.
 func isErrIgnored(err error, ignoredErrs []error) bool {
 	err = errorCause(err)
@@ -105,9 +116,6 @@ func isLocalStorage(networkPath string) bool {
 // Depending on the disk type network or local, initialize storage API.
 func newStorageAPI(disk string) (storage StorageAPI, err error) {
 	if isLocalStorage(disk) {
-		if idx := strings.LastIndex(disk, ":"); idx != -1 {
-			return newPosix(disk[idx+1:])
-		}
 		return newPosix(disk)
 	}
 	return newRPCClient(disk)
@@ -186,7 +194,7 @@ func xlHouseKeeping(storageDisks []StorageAPI) error {
 			err := cleanupDir(disk, minioMetaBucket, tmpMetaPrefix)
 			if err != nil {
 				switch errorCause(err) {
-				case errDiskNotFound, errVolumeNotFound:
+				case errDiskNotFound, errVolumeNotFound, errFileNotFound:
 				default:
 					errs[index] = err
 				}
@@ -216,8 +224,7 @@ func cleanupDir(storage StorageAPI, volume, dirPath string) error {
 	delFunc = func(entryPath string) error {
 		if !strings.HasSuffix(entryPath, slashSeparator) {
 			// Delete the file entry.
-			err := storage.DeleteFile(volume, entryPath)
-			return traceError(err)
+			return traceError(storage.DeleteFile(volume, entryPath))
 		}
 
 		// If it's a directory, list and call delFunc() for each entry.

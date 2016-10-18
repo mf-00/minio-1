@@ -136,25 +136,6 @@ func isMinioSNS(topicARN arnTopic) bool {
 	return strings.HasSuffix(topicARN.Type, snsTypeMinio)
 }
 
-// isMinioSNSConfigured - verifies if one topic ARN is valid and is enabled.
-func isMinioSNSConfigured(topicARN string, topicConfigs []topicConfig) bool {
-	for _, topicConfig := range topicConfigs {
-		// Validate if topic ARN is already enabled.
-		if topicARN == topicConfig.TopicARN {
-			return true
-		}
-	}
-	return false
-}
-
-// Validate if we recognize the queue type.
-func isValidQueue(sqsARN arnSQS) bool {
-	amqpQ := isAMQPQueue(sqsARN)       // Is amqp queue?.
-	elasticQ := isElasticQueue(sqsARN) // Is elastic queue?.
-	redisQ := isRedisQueue(sqsARN)     // Is redis queue?.
-	return amqpQ || elasticQ || redisQ
-}
-
 // Validate if we recognize the topic type.
 func isValidTopic(topicARN arnTopic) bool {
 	return isMinioSNS(topicARN) // Is minio topic?.
@@ -168,12 +149,19 @@ func isValidQueueID(queueARN string) bool {
 	if isAMQPQueue(sqsARN) { // AMQP eueue.
 		amqpN := serverConfig.GetAMQPNotifyByID(sqsARN.AccountID)
 		return amqpN.Enable && amqpN.URL != ""
+	} else if isNATSQueue(sqsARN) {
+		natsN := serverConfig.GetNATSNotifyByID(sqsARN.AccountID)
+		return natsN.Enable && natsN.Address != ""
 	} else if isElasticQueue(sqsARN) { // Elastic queue.
 		elasticN := serverConfig.GetElasticSearchNotifyByID(sqsARN.AccountID)
 		return elasticN.Enable && elasticN.URL != ""
 	} else if isRedisQueue(sqsARN) { // Redis queue.
 		redisN := serverConfig.GetRedisNotifyByID(sqsARN.AccountID)
 		return redisN.Enable && redisN.Addr != ""
+	} else if isPostgreSQLQueue(sqsARN) {
+		pgN := serverConfig.GetPostgreSQLNotifyByID(sqsARN.AccountID)
+		// Postgres can work with only default conn. info.
+		return pgN.Enable
 	}
 	return false
 }
@@ -277,25 +265,6 @@ func checkDuplicateQueueConfigs(configs []queueConfig) APIErrorCode {
 	return ErrNone
 }
 
-// Check all the topic configs for any duplicates.
-func checkDuplicateTopicConfigs(configs []topicConfig) APIErrorCode {
-	var topicConfigARNS []string
-
-	// Navigate through each configs and count the entries.
-	for _, config := range configs {
-		topicConfigARNS = append(topicConfigARNS, config.TopicARN)
-	}
-
-	// Check if there are any duplicate counts.
-	if err := checkDuplicates(topicConfigARNS); err != nil {
-		errorIf(err, "Invalid topic configs found.")
-		return ErrOverlappingConfigs
-	}
-
-	// Success.
-	return ErrNone
-}
-
 // Validates all the bucket notification configuration for their validity,
 // if one of the config is malformed or has invalid data it is rejected.
 // Configuration is never applied partially.
@@ -304,21 +273,10 @@ func validateNotificationConfig(nConfig notificationConfig) APIErrorCode {
 	if s3Error := validateQueueConfigs(nConfig.QueueConfigs); s3Error != ErrNone {
 		return s3Error
 	}
-	// Validate all topic configs.
-	if s3Error := validateTopicConfigs(nConfig.TopicConfigs); s3Error != ErrNone {
-		return s3Error
-	}
 
 	// Check for duplicate queue configs.
 	if len(nConfig.QueueConfigs) > 1 {
 		if s3Error := checkDuplicateQueueConfigs(nConfig.QueueConfigs); s3Error != ErrNone {
-			return s3Error
-		}
-	}
-
-	// Check for duplicate topic configs.
-	if len(nConfig.TopicConfigs) > 1 {
-		if s3Error := checkDuplicateTopicConfigs(nConfig.TopicConfigs); s3Error != ErrNone {
 			return s3Error
 		}
 	}
@@ -347,8 +305,10 @@ func unmarshalTopicARN(topicARN string) arnTopic {
 // Unmarshals input value of AWS ARN format into minioSqs object.
 // Returned value represents minio sqs types, currently supported are
 // - amqp
+// - nats
 // - elasticsearch
 // - redis
+// - postgresql
 func unmarshalSqsARN(queueARN string) (mSqs arnSQS) {
 	mSqs = arnSQS{}
 	if !strings.HasPrefix(queueARN, minioSqs+serverConfig.GetRegion()+":") {
@@ -358,10 +318,14 @@ func unmarshalSqsARN(queueARN string) (mSqs arnSQS) {
 	switch {
 	case strings.HasSuffix(sqsType, queueTypeAMQP):
 		mSqs.Type = queueTypeAMQP
+	case strings.HasSuffix(sqsType, queueTypeNATS):
+		mSqs.Type = queueTypeNATS
 	case strings.HasSuffix(sqsType, queueTypeElastic):
 		mSqs.Type = queueTypeElastic
 	case strings.HasSuffix(sqsType, queueTypeRedis):
 		mSqs.Type = queueTypeRedis
+	case strings.HasSuffix(sqsType, queueTypePostgreSQL):
+		mSqs.Type = queueTypePostgreSQL
 	} // Add more queues here.
 	mSqs.AccountID = strings.TrimSuffix(sqsType, ":"+mSqs.Type)
 	return mSqs

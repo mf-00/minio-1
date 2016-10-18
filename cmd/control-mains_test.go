@@ -17,6 +17,10 @@
 package cmd
 
 import (
+	"bytes"
+	"crypto/rand"
+	"os"
+	"path"
 	"testing"
 
 	"github.com/minio/cli"
@@ -43,51 +47,87 @@ func TestControlHealMain(t *testing.T) {
 	// run app
 	err := app.Run(args)
 	if err != nil {
-		t.Errorf("Control-Heal-Main test failed with - %s", err.Error())
+		t.Errorf("Control-Heal-Format-Main test failed with - %s", err.Error())
+	}
+
+	obj := newObjectLayerFn()
+	// Create "bucket"
+	err = obj.MakeBucket("bucket")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bucket := "bucket"
+	object := "object"
+
+	data := make([]byte, 1*1024*1024)
+	length := int64(len(data))
+	_, err = rand.Read(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = obj.PutObject(bucket, object, length, bytes.NewReader(data), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove the object - to simulate the case where the disk was down when the object was created.
+	err = os.RemoveAll(path.Join(testServer.Disks[0], bucket, object))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	args = []string{"./minio", "control", "heal", url + "/bucket"}
+	// run app
+	err = app.Run(args)
+	if err != nil {
+		t.Errorf("Control-Heal-Bucket-Main test failed with - %s", err.Error())
+	}
+
+	args = []string{"./minio", "control", "heal", url + "/bucket/object"}
+	// run app
+	err = app.Run(args)
+	if err != nil {
+		t.Errorf("Control-Heal-Bucket-With-Prefix-Main test failed with - %s", err.Error())
 	}
 }
 
 // Test to call lockControl() in control-lock-main.go
 func TestControlLockMain(t *testing.T) {
-	// create cli app for testing
+	// Create cli app for testing
 	app := cli.NewApp()
 	app.Commands = []cli.Command{controlCmd}
 
-	// start test server
+	// Start test server
 	testServer := StartTestServer(t, "XL")
 
-	// schedule cleanup at the end
+	// Schedule cleanup at the end
 	defer testServer.Stop()
 
-	// enabling lock instrumentation.
-	globalDebugLock = true
-	// initializing the locks.
-	initNSLock(false)
-	// set debug lock info to `nil` so that other tests do not see
-	// such modified env settings.
-	defer func() {
-		globalDebugLock = false
-		nsMutex.debugLockMap = nil
-	}()
-
-	// fetch http server endpoint
+	// Fetch http server endpoint
 	url := testServer.Server.URL
 
-	// create args to call
-	args := []string{"./minio", "control", "lock", url}
+	// Create args to call
+	args := []string{"./minio", "control", "lock", "list", url}
 
-	// run app
+	// Run app
 	err := app.Run(args)
 	if err != nil {
 		t.Errorf("Control-Lock-Main test failed with - %s", err.Error())
 	}
 }
 
-// Test to call shutdownControl() in control-shutdown-main.go
-func TestControlShutdownMain(t *testing.T) {
+// Test to call serviceControl(stop) in control-service-main.go
+func TestControlServiceStopMain(t *testing.T) {
 	// create cli app for testing
 	app := cli.NewApp()
 	app.Commands = []cli.Command{controlCmd}
+
+	// Initialize done channel specifically for each tests.
+	globalServiceDoneCh = make(chan struct{}, 1)
+	// Initialize signal channel specifically for each tests.
+	globalServiceSignalCh = make(chan serviceSignal, 1)
 
 	// start test server
 	testServer := StartTestServer(t, "XL")
@@ -98,29 +138,96 @@ func TestControlShutdownMain(t *testing.T) {
 	// fetch http server endpoint
 	url := testServer.Server.URL
 
-	// create a dummy exit function
-	testExitFn := func(exitCode int) {
-		if exitCode != int(exitSuccess) {
-			t.Errorf("Control-Shutdown-Main test failed - server exited with non-success error code - %d",
-				exitCode)
-		}
-	}
-
-	// initialize the shutdown signal listener
-	err := initGracefulShutdown(testExitFn)
-	if err != nil {
-		t.Fatalf("Control-Shutdown-Main test failed in initGracefulShutdown() - %s",
-			err.Error())
-	}
-
 	// create args to call
-	args := []string{"./minio", "control", "shutdown", url}
+	args := []string{"./minio", "control", "service", "stop", url}
+
+	// run app
+	err := app.Run(args)
+	if err != nil {
+		t.Errorf("Control-Service-Stop-Main test failed with - %s", err)
+	}
+}
+
+// Test to call serviceControl(status) in control-service-main.go
+func TestControlServiceStatusMain(t *testing.T) {
+	// create cli app for testing
+	app := cli.NewApp()
+	app.Commands = []cli.Command{controlCmd}
+
+	// Initialize done channel specifically for each tests.
+	globalServiceDoneCh = make(chan struct{}, 1)
+	// Initialize signal channel specifically for each tests.
+	globalServiceSignalCh = make(chan serviceSignal, 1)
+
+	// start test server
+	testServer := StartTestServer(t, "XL")
+
+	// schedule cleanup at the end
+	defer testServer.Stop()
+
+	// fetch http server endpoint
+	url := testServer.Server.URL
+
+	// Create args to call
+	args := []string{"./minio", "control", "service", "status", url}
+
+	// run app
+	err := app.Run(args)
+	if err != nil {
+		t.Errorf("Control-Service-Status-Main test failed with - %s", err)
+	}
+
+	// Create args to call
+	args = []string{"./minio", "control", "service", "stop", url}
 
 	// run app
 	err = app.Run(args)
 	if err != nil {
-		t.Errorf("Control-Shutdown-Main test failed with - %s",
-			err.Error())
+		t.Errorf("Control-Service-Stop-Main test failed with - %s", err)
+	}
+}
+
+// Test to call serviceControl(restart) in control-service-main.go
+func TestControlServiceRestartMain(t *testing.T) {
+	// create cli app for testing
+	app := cli.NewApp()
+	app.Commands = []cli.Command{controlCmd}
+
+	// Initialize done channel specifically for each tests.
+	globalServiceDoneCh = make(chan struct{}, 1)
+	// Initialize signal channel specifically for each tests.
+	globalServiceSignalCh = make(chan serviceSignal, 1)
+
+	// start test server
+	testServer := StartTestServer(t, "XL")
+
+	// schedule cleanup at the end
+	defer testServer.Stop()
+
+	// fetch http server endpoint
+	url := testServer.Server.URL
+
+	// Create args to call
+	args := []string{"./minio", "control", "service", "restart", url}
+
+	// run app
+	err := app.Run(args)
+	if err != nil {
+		t.Errorf("Control-Service-Restart-Main test failed with - %s", err)
+	}
+
+	// Initialize done channel specifically for each tests.
+	globalServiceDoneCh = make(chan struct{}, 1)
+	// Initialize signal channel specifically for each tests.
+	globalServiceSignalCh = make(chan serviceSignal, 1)
+
+	// Create args to call
+	args = []string{"./minio", "control", "service", "stop", url}
+
+	// run app
+	err = app.Run(args)
+	if err != nil {
+		t.Errorf("Control-Service-Stop-Main test failed with - %s", err)
 	}
 }
 
@@ -137,7 +244,6 @@ func TestControlMain(t *testing.T) {
 	// run app
 	err := app.Run(args)
 	if err != nil {
-		t.Errorf("Control-Main test failed with - %s",
-			err.Error())
+		t.Errorf("Control-Main test failed with - %s", err)
 	}
 }

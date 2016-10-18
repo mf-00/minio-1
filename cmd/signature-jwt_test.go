@@ -72,11 +72,11 @@ func TestNewJWT(t *testing.T) {
 		expectedErr error
 	}{
 		// Test non-existent config directory.
-		{path.Join(path1, "non-existent-dir"), false, nil, fmt.Errorf("Server not initialzed")},
+		{path.Join(path1, "non-existent-dir"), false, nil, fmt.Errorf("Server not initialized")},
 		// Test empty config directory.
-		{path2, false, nil, fmt.Errorf("Server not initialzed")},
+		{path2, false, nil, fmt.Errorf("Server not initialized")},
 		// Test empty config file.
-		{path3, false, nil, fmt.Errorf("Server not initialzed")},
+		{path3, false, nil, fmt.Errorf("Server not initialized")},
 		// Test initialized config file.
 		{path4, true, nil, nil},
 		// Test to read already created config file.
@@ -108,7 +108,7 @@ func TestNewJWT(t *testing.T) {
 			serverConfig.SetCredential(*testCase.cred)
 		}
 
-		_, err := newJWT(defaultWebTokenExpiry)
+		_, err := newJWT(defaultJWTExpiry)
 
 		if testCase.expectedErr != nil {
 			if err == nil {
@@ -132,7 +132,7 @@ func TestGenerateToken(t *testing.T) {
 	}
 	defer removeAll(testPath)
 
-	jwt, err := newJWT(defaultWebTokenExpiry)
+	jwt, err := newJWT(defaultJWTExpiry)
 	if err != nil {
 		t.Fatalf("unable get new JWT, %s", err)
 	}
@@ -179,7 +179,7 @@ func TestAuthenticate(t *testing.T) {
 	}
 	defer removeAll(testPath)
 
-	jwt, err := newJWT(defaultWebTokenExpiry)
+	jwt, err := newJWT(defaultJWTExpiry)
 	if err != nil {
 		t.Fatalf("unable get new JWT, %s", err)
 	}
@@ -201,9 +201,9 @@ func TestAuthenticate(t *testing.T) {
 		// Secret key too long.
 		{"myuser", "pass1234567890123456789012345678901234567", fmt.Errorf("Invalid secret key")},
 		// Authentication error.
-		{"myuser", "mypassword", fmt.Errorf("Access key does not match")},
+		{"myuser", "mypassword", errInvalidAccessKeyID},
 		// Authentication error.
-		{serverConfig.GetCredential().AccessKeyID, "mypassword", fmt.Errorf("Authentication failed")},
+		{serverConfig.GetCredential().AccessKeyID, "mypassword", errAuthentication},
 		// Success.
 		{serverConfig.GetCredential().AccessKeyID, serverConfig.GetCredential().SecretAccessKey, nil},
 		// Success when access key contains leading/trailing spaces.
@@ -213,12 +213,10 @@ func TestAuthenticate(t *testing.T) {
 	// Run tests.
 	for _, testCase := range testCases {
 		err := jwt.Authenticate(testCase.accessKey, testCase.secretKey)
-
 		if testCase.expectedErr != nil {
 			if err == nil {
 				t.Fatalf("%+v: expected: %s, got: <nil>", testCase, testCase.expectedErr)
 			}
-
 			if testCase.expectedErr.Error() != err.Error() {
 				t.Fatalf("%+v: expected: %s, got: %s", testCase, testCase.expectedErr, err)
 			}

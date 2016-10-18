@@ -43,7 +43,7 @@ import (
 // isJWTReqAuthenticated validates if any incoming request to be a
 // valid JWT authenticated request.
 func isJWTReqAuthenticated(req *http.Request) bool {
-	jwt, err := newJWT(defaultWebTokenExpiry)
+	jwt, err := newJWT(defaultJWTExpiry)
 	if err != nil {
 		errorIf(err, "unable to initialize a new JWT")
 		return false
@@ -129,7 +129,7 @@ func (web *webAPIHandlers) StorageInfo(r *http.Request, args *GenericArgs, reply
 	reply.UIVersion = miniobrowser.UIVersion
 	objectAPI := web.ObjectAPI()
 	if objectAPI == nil {
-		return &json2.Error{Message: "Server not initialized, please try again., please try again."}
+		return &json2.Error{Message: "Server not initialized"}
 	}
 	reply.StorageInfo = objectAPI.StorageInfo()
 	return nil
@@ -148,7 +148,7 @@ func (web *webAPIHandlers) MakeBucket(r *http.Request, args *MakeBucketArgs, rep
 	reply.UIVersion = miniobrowser.UIVersion
 	objectAPI := web.ObjectAPI()
 	if objectAPI == nil {
-		return &json2.Error{Message: "Server not initialized, please try again."}
+		return &json2.Error{Message: "Server not initialized"}
 	}
 	if err := objectAPI.MakeBucket(args.BucketName); err != nil {
 		return &json2.Error{Message: err.Error()}
@@ -177,7 +177,7 @@ func (web *webAPIHandlers) ListBuckets(r *http.Request, args *WebGenericArgs, re
 	}
 	objectAPI := web.ObjectAPI()
 	if objectAPI == nil {
-		return &json2.Error{Message: "Server not initialized, please try again."}
+		return &json2.Error{Message: "Server not initialized"}
 	}
 	buckets, err := objectAPI.ListBuckets()
 	if err != nil {
@@ -229,7 +229,7 @@ func (web *webAPIHandlers) ListObjects(r *http.Request, args *ListObjectsArgs, r
 	for {
 		objectAPI := web.ObjectAPI()
 		if objectAPI == nil {
-			return &json2.Error{Message: "Server not initialized, please try again."}
+			return &json2.Error{Message: "Server not initialized"}
 		}
 		lo, err := objectAPI.ListObjects(args.BucketName, args.Prefix, marker, "/", 1000)
 		if err != nil {
@@ -271,7 +271,7 @@ func (web *webAPIHandlers) RemoveObject(r *http.Request, args *RemoveObjectArgs,
 	reply.UIVersion = miniobrowser.UIVersion
 	objectAPI := web.ObjectAPI()
 	if objectAPI == nil {
-		return &json2.Error{Message: "Server not initialized, please try again."}
+		return &json2.Error{Message: "Server not initialized"}
 	}
 	if err := objectAPI.DeleteObject(args.BucketName, args.ObjectName); err != nil {
 		return &json2.Error{Message: err.Error()}
@@ -291,14 +291,9 @@ type LoginRep struct {
 	UIVersion string `json:"uiVersion"`
 }
 
-// Default JWT for minio browser expires in 24hrs.
-const (
-	defaultWebTokenExpiry time.Duration = time.Hour * 24 // 24Hrs.
-)
-
 // Login - user login handler.
 func (web *webAPIHandlers) Login(r *http.Request, args *LoginArgs, reply *LoginRep) error {
-	jwt, err := newJWT(defaultWebTokenExpiry)
+	jwt, err := newJWT(defaultJWTExpiry)
 	if err != nil {
 		return &json2.Error{Message: err.Error()}
 	}
@@ -342,8 +337,9 @@ type SetAuthArgs struct {
 
 // SetAuthReply - reply for SetAuth
 type SetAuthReply struct {
-	Token     string `json:"token"`
-	UIVersion string `json:"uiVersion"`
+	Token       string            `json:"token"`
+	UIVersion   string            `json:"uiVersion"`
+	PeerErrMsgs map[string]string `json:"peerErrMsgs"`
 }
 
 // SetAuth - Set accessKey and secretKey credentials.
@@ -357,24 +353,68 @@ func (web *webAPIHandlers) SetAuth(r *http.Request, args *SetAuthArgs, reply *Se
 	if !isValidSecretKey.MatchString(args.SecretKey) {
 		return &json2.Error{Message: "Invalid Secret Key"}
 	}
+
 	cred := credential{args.AccessKey, args.SecretKey}
-	serverConfig.SetCredential(cred)
-	if err := serverConfig.Save(); err != nil {
-		return &json2.Error{Message: err.Error()}
+	unexpErrsMsg := "ALERT: Unexpected error(s) happened - please check the server logs."
+	gaveUpMsg := func(errMsg error, moreErrors bool) *json2.Error {
+		msg := fmt.Sprintf(
+			"ALERT: We gave up due to: '%s', but there were more errors. Please check the server logs.",
+			errMsg.Error(),
+		)
+		if moreErrors {
+			return &json2.Error{Message: msg}
+		}
+		return &json2.Error{Message: errMsg.Error()}
 	}
 
-	jwt, err := newJWT(defaultWebTokenExpiry) // JWT Expiry set to 24Hrs.
+	// Notify all other Minio peers to update credentials
+	errsMap := updateCredsOnPeers(cred)
+
+	// Update local credentials
+	serverConfig.SetCredential(cred)
+	if err := serverConfig.Save(); err != nil {
+		errsMap[globalMinioAddr] = err
+	}
+
+	// Log all the peer related error messages, and populate the
+	// PeerErrMsgs map.
+	reply.PeerErrMsgs = make(map[string]string)
+	for svr, errVal := range errsMap {
+		tErr := fmt.Errorf("Unable to change credentials on %s: %v", svr, errVal)
+		errorIf(tErr, "Credentials change could not be propagated successfully!")
+		reply.PeerErrMsgs[svr] = errVal.Error()
+	}
+
+	// If we were unable to update locally, we return an error to
+	// the user/browser.
+	if errsMap[globalMinioAddr] != nil {
+		// Since the error message may be very long to display
+		// on the browser, we tell the user to check the
+		// server logs.
+		return &json2.Error{Message: unexpErrsMsg}
+	}
+
+	// Did we have peer errors?
+	var moreErrors bool
+	if len(errsMap) > 0 {
+		moreErrors = true
+	}
+
+	// If we were able to update locally, we try to generate a new
+	// token and complete the request.
+	jwt, err := newJWT(defaultJWTExpiry) // JWT Expiry set to 24Hrs.
 	if err != nil {
-		return &json2.Error{Message: err.Error()}
+		return gaveUpMsg(err, moreErrors)
 	}
 
 	if err = jwt.Authenticate(args.AccessKey, args.SecretKey); err != nil {
-		return &json2.Error{Message: err.Error()}
+		return gaveUpMsg(err, moreErrors)
 	}
 	token, err := jwt.GenerateToken(args.AccessKey)
 	if err != nil {
-		return &json2.Error{Message: err.Error()}
+		return gaveUpMsg(err, moreErrors)
 	}
+
 	reply.Token = token
 	reply.UIVersion = miniobrowser.UIVersion
 	return nil
@@ -414,10 +454,11 @@ func (web *webAPIHandlers) Upload(w http.ResponseWriter, r *http.Request) {
 
 	objectAPI := web.ObjectAPI()
 	if objectAPI == nil {
-		writeWebErrorResponse(w, errors.New("Server not initialized, please try again."))
+		writeWebErrorResponse(w, errors.New("Server not initialized"))
 		return
 	}
-	if _, err := objectAPI.PutObject(bucket, object, -1, r.Body, metadata); err != nil {
+	sha256sum := ""
+	if _, err := objectAPI.PutObject(bucket, object, -1, r.Body, metadata, sha256sum); err != nil {
 		writeWebErrorResponse(w, err)
 		return
 	}
@@ -429,17 +470,15 @@ func (web *webAPIHandlers) Upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if globalEventNotifier.IsBucketNotificationSet(bucket) {
-		// Notify object created event.
-		eventNotify(eventData{
-			Type:    ObjectCreatedPut,
-			Bucket:  bucket,
-			ObjInfo: objInfo,
-			ReqParams: map[string]string{
-				"sourceIPAddress": r.RemoteAddr,
-			},
-		})
-	}
+	// Notify object created event.
+	eventNotify(eventData{
+		Type:    ObjectCreatedPut,
+		Bucket:  bucket,
+		ObjInfo: objInfo,
+		ReqParams: map[string]string{
+			"sourceIPAddress": r.RemoteAddr,
+		},
+	})
 }
 
 // Download - file download handler.
@@ -449,7 +488,7 @@ func (web *webAPIHandlers) Download(w http.ResponseWriter, r *http.Request) {
 	object := vars["object"]
 	tokenStr := r.URL.Query().Get("token")
 
-	jwt, err := newJWT(defaultWebTokenExpiry) // Expiry set to 24Hrs.
+	jwt, err := newJWT(defaultJWTExpiry) // Expiry set to 24Hrs.
 	if err != nil {
 		errorIf(err, "error in getting new JWT")
 		return
@@ -470,7 +509,7 @@ func (web *webAPIHandlers) Download(w http.ResponseWriter, r *http.Request) {
 
 	objectAPI := web.ObjectAPI()
 	if objectAPI == nil {
-		writeWebErrorResponse(w, errors.New("Server not initialized, please try again."))
+		writeWebErrorResponse(w, errors.New("Server not initialized"))
 		return
 	}
 	objInfo, err := objectAPI.GetObjectInfo(bucket, object)
@@ -569,34 +608,38 @@ func (web *webAPIHandlers) GetBucketPolicy(r *http.Request, args *GetBucketPolic
 
 	objectAPI := web.ObjectAPI()
 	if objectAPI == nil {
-		return &json2.Error{Message: "Server not initialized, please try again."}
+		return &json2.Error{Message: "Server not initialized"}
 	}
 	policyInfo, err := readBucketAccessPolicy(objectAPI, args.BucketName)
 	if err != nil {
 		return &json2.Error{Message: err.Error()}
 	}
 
-	bucketPolicy := policy.GetPolicy(policyInfo.Statements, args.BucketName, args.Prefix)
-
 	reply.UIVersion = miniobrowser.UIVersion
-	reply.Policy = bucketPolicy
+	reply.Policy = policy.GetPolicy(policyInfo.Statements, args.BucketName, args.Prefix)
 
 	return nil
 }
 
-// GetAllBucketPolicyArgs - get all bucket policy args.
-type GetAllBucketPolicyArgs struct {
+// ListAllBucketPoliciesArgs - get all bucket policies.
+type ListAllBucketPoliciesArgs struct {
 	BucketName string `json:"bucketName"`
 }
 
-// GetAllBucketPolicyRep - get all bucket policy reply.
-type GetAllBucketPolicyRep struct {
-	UIVersion string                         `json:"uiVersion"`
-	Policies  map[string]policy.BucketPolicy `json:"policies"`
+// Collection of canned bucket policy at a given prefix.
+type bucketAccessPolicy struct {
+	Prefix string              `json:"prefix"`
+	Policy policy.BucketPolicy `json:"policy"`
 }
 
-// GetAllBucketPolicy - get all bucket policy.
-func (web *webAPIHandlers) GetAllBucketPolicy(r *http.Request, args *GetAllBucketPolicyArgs, reply *GetAllBucketPolicyRep) error {
+// ListAllBucketPoliciesRep - get all bucket policy reply.
+type ListAllBucketPoliciesRep struct {
+	UIVersion string               `json:"uiVersion"`
+	Policies  []bucketAccessPolicy `json:"policies"`
+}
+
+// GetllBucketPolicy - get all bucket policy.
+func (web *webAPIHandlers) ListAllBucketPolicies(r *http.Request, args *ListAllBucketPoliciesArgs, reply *ListAllBucketPoliciesRep) error {
 	if !isJWTReqAuthenticated(r) {
 		return &json2.Error{Message: "Unauthorized request"}
 	}
@@ -610,11 +653,14 @@ func (web *webAPIHandlers) GetAllBucketPolicy(r *http.Request, args *GetAllBucke
 		return &json2.Error{Message: err.Error()}
 	}
 
-	policies := policy.GetPolicies(policyInfo.Statements, args.BucketName)
-
 	reply.UIVersion = miniobrowser.UIVersion
-	reply.Policies = policies
-
+	reply.Policies = []bucketAccessPolicy{}
+	for prefix, policy := range policy.GetPolicies(policyInfo.Statements, args.BucketName) {
+		reply.Policies = append(reply.Policies, bucketAccessPolicy{
+			Prefix: prefix,
+			Policy: policy,
+		})
+	}
 	return nil
 }
 
@@ -632,7 +678,7 @@ func (web *webAPIHandlers) SetBucketPolicy(r *http.Request, args *SetBucketPolic
 	}
 	objectAPI := web.ObjectAPI()
 	if objectAPI == nil {
-		return &json2.Error{Message: "Server not initialized, please try again."}
+		return &json2.Error{Message: "Server not initialized"}
 	}
 
 	bucketP := policy.BucketPolicy(args.Policy)
@@ -645,6 +691,12 @@ func (web *webAPIHandlers) SetBucketPolicy(r *http.Request, args *SetBucketPolic
 		return &json2.Error{Message: err.Error()}
 	}
 	policyInfo.Statements = policy.SetPolicy(policyInfo.Statements, bucketP, args.BucketName, args.Prefix)
+	if len(policyInfo.Statements) == 0 {
+		if err = persistAndNotifyBucketPolicyChange(args.BucketName, policyChange{true, nil}, objectAPI); err != nil {
+			return &json2.Error{Message: err.Error()}
+		}
+		return nil
+	}
 	data, err := json.Marshal(policyInfo)
 	if err != nil {
 		return &json2.Error{Message: err.Error()}
@@ -663,8 +715,9 @@ func (web *webAPIHandlers) SetBucketPolicy(r *http.Request, args *SetBucketPolic
 		return &json2.Error{Message: getAPIError(s3Error).Description}
 	}
 
-	// TODO: update policy statements according to bucket name, prefix and policy arguments.
-	if err := writeBucketPolicy(args.BucketName, objectAPI, bytes.NewReader(data), int64(len(data))); err != nil {
+	// TODO: update policy statements according to bucket name,
+	// prefix and policy arguments.
+	if err := persistAndNotifyBucketPolicyChange(args.BucketName, policyChange{false, policy}, objectAPI); err != nil {
 		return &json2.Error{Message: err.Error()}
 	}
 
@@ -741,7 +794,7 @@ func (web *webAPIHandlers) _defaultHandler(w http.ResponseWriter, r *http.Reques
 }
 
 func (web *webAPIHandlers) redirectMinioHandler(w http.ResponseWriter, r *http.Request) {
-	jwt, err := newJWT(defaultWebTokenExpiry)
+	jwt, err := newJWT(defaultJWTExpiry)
 	if err != nil {
 		fmt.Fprintf(w, "<h1>Failed to get minio token:%s</h1>\n", err)
 	}

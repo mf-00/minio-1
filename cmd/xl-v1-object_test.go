@@ -21,7 +21,12 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"io/ioutil"
+	"math/rand"
+	"os"
+	"path"
+	"reflect"
 	"testing"
+	"time"
 )
 
 func TestRepeatPutObjectPart(t *testing.T) {
@@ -50,12 +55,12 @@ func TestRepeatPutObjectPart(t *testing.T) {
 	md5Writer := md5.New()
 	md5Writer.Write(fiveMBBytes)
 	md5Hex := hex.EncodeToString(md5Writer.Sum(nil))
-	_, err = objLayer.PutObjectPart("bucket1", "mpartObj1", uploadID, 1, 5*1024*1024, bytes.NewReader(fiveMBBytes), md5Hex)
+	_, err = objLayer.PutObjectPart("bucket1", "mpartObj1", uploadID, 1, 5*1024*1024, bytes.NewReader(fiveMBBytes), md5Hex, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// PutObjectPart should succeed even if part already exists. ref: https://github.com/minio/minio/issues/1930
-	_, err = objLayer.PutObjectPart("bucket1", "mpartObj1", uploadID, 1, 5*1024*1024, bytes.NewReader(fiveMBBytes), md5Hex)
+	_, err = objLayer.PutObjectPart("bucket1", "mpartObj1", uploadID, 1, 5*1024*1024, bytes.NewReader(fiveMBBytes), md5Hex, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +94,7 @@ func TestXLDeleteObjectBasic(t *testing.T) {
 	}
 
 	// Create object "obj" under bucket "bucket" for Test 7 to pass
-	_, err = xl.PutObject("bucket", "obj", int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil)
+	_, err = xl.PutObject("bucket", "obj", int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil, "")
 	if err != nil {
 		t.Fatalf("XL Object upload failed: <ERROR> %s", err)
 	}
@@ -125,7 +130,7 @@ func TestXLDeleteObjectDiskNotFound(t *testing.T) {
 	bucket := "bucket"
 	object := "object"
 	// Create object "obj" under bucket "bucket".
-	_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil)
+	_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +145,7 @@ func TestXLDeleteObjectDiskNotFound(t *testing.T) {
 	}
 
 	// Create "obj" under "bucket".
-	_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil)
+	_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +180,7 @@ func TestGetObjectNoQuorum(t *testing.T) {
 	bucket := "bucket"
 	object := "object"
 	// Create "object" under "bucket".
-	_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil)
+	_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,7 +232,7 @@ func TestPutObjectNoQuorum(t *testing.T) {
 	bucket := "bucket"
 	object := "object"
 	// Create "object" under "bucket".
-	_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil)
+	_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +255,7 @@ func TestPutObjectNoQuorum(t *testing.T) {
 			}
 		}
 		// Upload new content to same object "object"
-		_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil)
+		_, err = obj.PutObject(bucket, object, int64(len("abcd")), bytes.NewReader([]byte("abcd")), nil, "")
 		err = errorCause(err)
 		if err != toObjectErr(errXLWriteQuorum, bucket, object) {
 			t.Errorf("Expected putObject to fail with %v, but failed with %v", toObjectErr(errXLWriteQuorum, bucket, object), err)
@@ -258,4 +263,104 @@ func TestPutObjectNoQuorum(t *testing.T) {
 	}
 	// Cleanup backend directories.
 	removeRoots(fsDirs)
+}
+
+// Tests both object and bucket healing.
+func TestHealing(t *testing.T) {
+	obj, fsDirs, err := prepareXL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer removeRoots(fsDirs)
+	xl := obj.(xlObjects)
+
+	// Create "bucket"
+	err = obj.MakeBucket("bucket")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bucket := "bucket"
+	object := "object"
+
+	data := make([]byte, 1*1024*1024)
+	length := int64(len(data))
+	_, err = rand.Read(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = obj.PutObject(bucket, object, length, bytes.NewReader(data), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	disk := xl.storageDisks[0]
+	xlMetaPreHeal, err := readXLMeta(disk, bucket, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove the object - to simulate the case where the disk was down when the object
+	// was created.
+	err = os.RemoveAll(path.Join(fsDirs[0], bucket, object))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = xl.HealObject(bucket, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	xlMetaPostHeal, err := readXLMeta(disk, bucket, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// After heal the meta file should be as expected.
+	if !reflect.DeepEqual(xlMetaPreHeal, xlMetaPostHeal) {
+		t.Fatal("HealObject failed")
+	}
+
+	// Write xl.json with different modtime to simulate the case where a disk had
+	// gone down when an object was replaced by a new object.
+	xlMetaOutDated := xlMetaPreHeal
+	xlMetaOutDated.Stat.ModTime = time.Now()
+	err = writeXLMetadata(disk, bucket, object, xlMetaOutDated)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = xl.HealObject(bucket, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	xlMetaPostHeal, err = readXLMeta(disk, bucket, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// After heal the meta file should be as expected.
+	if !reflect.DeepEqual(xlMetaPreHeal, xlMetaPostHeal) {
+		t.Fatal("HealObject failed")
+	}
+
+	// Remove the bucket - to simulate the case where bucket was
+	// created when the disk was down.
+	err = os.RemoveAll(path.Join(fsDirs[0], bucket))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// This would create the bucket.
+	err = xl.HealBucket(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stat the bucket to make sure that it was created.
+	_, err = xl.storageDisks[0].StatVol(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
 }

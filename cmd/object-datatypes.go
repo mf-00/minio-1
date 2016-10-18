@@ -18,12 +18,36 @@ package cmd
 
 import "time"
 
+// BackendType - represents different backend types.
+type BackendType int
+
+// Enum for different backend types.
+const (
+	Unknown BackendType = iota
+	// Filesystem backend.
+	FS
+	// Multi disk single node XL backend.
+	XL
+	// Add your own backend.
+)
+
 // StorageInfo - represents total capacity of underlying storage.
 type StorageInfo struct {
 	// Total disk space.
 	Total int64
 	// Free available disk space.
 	Free int64
+	// Backend type.
+	Backend struct {
+		// Represents various backend types, currently on FS and XL.
+		Type BackendType
+
+		// Following fields are only meaningful if BackendType is XL.
+		OnlineDisks  int // Online disks during server startup.
+		OfflineDisks int // Offline disks during server startup.
+		ReadQuorum   int // Minimum disks required for successful read operations.
+		WriteQuorum  int // Minimum disks required for successful write operations.
+	}
 }
 
 // BucketInfo - represents bucket metadata.

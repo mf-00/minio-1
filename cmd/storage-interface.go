@@ -20,6 +20,9 @@ import "github.com/mf-00/newgo/pkg/disk"
 
 // StorageAPI interface.
 type StorageAPI interface {
+	// Stringified version of disk.
+	String() string
+
 	// Storage operations.
 	DiskInfo() (info disk.Info, err error)
 

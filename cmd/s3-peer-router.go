@@ -1,5 +1,5 @@
 /*
- * Minio Cloud Storage, (C) 2016 Minio, Inc.
+ * Minio Cloud Storage, (C) 2014-2016 Minio, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -22,21 +22,26 @@ import (
 	router "github.com/gorilla/mux"
 )
 
-// Routes paths for "minio control" commands.
 const (
-	controlPath = "/controller"
+	s3Path = "/s3/remote"
 )
 
-// Register controller RPC handlers.
-func registerControllerRPCRouter(mux *router.Router, ctrlHandlers *controllerAPIHandlers) {
-	ctrlRPCServer := rpc.NewServer()
-	ctrlRPCServer.RegisterName("Controller", ctrlHandlers)
-
-	ctrlRouter := mux.NewRoute().PathPrefix(reservedBucket).Subrouter()
-	ctrlRouter.Path(controlPath).Handler(ctrlRPCServer)
+type s3PeerAPIHandlers struct {
+	ObjectAPI func() ObjectLayer
 }
 
-// Handler for object healing.
-type controllerAPIHandlers struct {
-	ObjectAPI func() ObjectLayer
+func registerS3PeerRPCRouter(mux *router.Router) error {
+	s3PeerHandlers := &s3PeerAPIHandlers{
+		ObjectAPI: newObjectLayerFn,
+	}
+
+	s3PeerRPCServer := rpc.NewServer()
+	err := s3PeerRPCServer.RegisterName("S3", s3PeerHandlers)
+	if err != nil {
+		return traceError(err)
+	}
+
+	s3PeerRouter := mux.NewRoute().PathPrefix(reservedBucket).Subrouter()
+	s3PeerRouter.Path(s3Path).Handler(s3PeerRPCServer)
+	return nil
 }

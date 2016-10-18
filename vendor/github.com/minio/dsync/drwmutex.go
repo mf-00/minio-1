@@ -124,7 +124,7 @@ func (dm *DRWMutex) lockBlocking(isReadLock bool) {
 
 			// if success, copy array to object
 			if isReadLock {
-				// append new array of bools at the end
+				// append new array of strings at the end
 				dm.readersLocks = append(dm.readersLocks, make([]string, dnodeCount))
 				// and copy stack array into last spot
 				copy(dm.readersLocks[len(dm.readersLocks)-1], locks[:])
@@ -211,7 +211,8 @@ func lock(clnts []RPC, locks *[]string, lockName string, isReadLock bool) bool {
 					(*locks)[grant.index] = grant.lockUid
 				} else {
 					locksFailed++
-					if locksFailed > dnodeCount-dquorum {
+					if !isReadLock && locksFailed > dnodeCount-dquorum ||
+						isReadLock && locksFailed > dnodeCount-dquorumReads {
 						// We know that we are not going to get the lock anymore, so exit out
 						// and release any locks that did get acquired
 						done = true
@@ -223,7 +224,7 @@ func lock(clnts []RPC, locks *[]string, lockName string, isReadLock bool) bool {
 				done = true
 				// timeout happened, maybe one of the nodes is slow, count
 				// number of locks to check whether we have quorum or not
-				if !quorumMet(locks) {
+				if !quorumMet(locks, isReadLock) {
 					releaseAll(clnts, locks, lockName, isReadLock)
 				}
 			}
@@ -234,7 +235,7 @@ func lock(clnts []RPC, locks *[]string, lockName string, isReadLock bool) bool {
 		}
 
 		// Count locks in order to determine whterh we have quorum or not
-		quorum = quorumMet(locks)
+		quorum = quorumMet(locks, isReadLock)
 
 		// Signal that we have the quorum
 		wg.Done()
@@ -263,8 +264,8 @@ func lock(clnts []RPC, locks *[]string, lockName string, isReadLock bool) bool {
 	return quorum
 }
 
-// quorumMet determines whether we have acquired n/2+1 underlying locks or not
-func quorumMet(locks *[]string) bool {
+// quorumMet determines whether we have acquired the required quorum of underlying locks or not
+func quorumMet(locks *[]string, isReadLock bool) bool {
 
 	count := 0
 	for _, uid := range *locks {
@@ -273,7 +274,11 @@ func quorumMet(locks *[]string) bool {
 		}
 	}
 
-	return count >= dquorum
+	if isReadLock {
+		return count >= dquorumReads
+	} else {
+		return count >= dquorum
+	}
 }
 
 // releaseAll releases all locks that are marked as locked
@@ -310,12 +315,14 @@ func (dm *DRWMutex) Unlock() {
 			panic("Trying to Unlock() while no Lock() is active")
 		}
 
-		// Copy writelocks to stack array
+		// Copy write locks to stack array
 		copy(locks, dm.writeLocks[:])
+		// Clear write locks array
+		dm.writeLocks = make([]string, dnodeCount)
 	}
 
 	isReadLock := false
-	unlock(&locks, dm.Name, isReadLock)
+	unlock(locks, dm.Name, isReadLock)
 }
 
 // RUnlock releases a read lock held on dm.
@@ -339,22 +346,39 @@ func (dm *DRWMutex) RUnlock() {
 	}
 
 	isReadLock := true
-	unlock(&locks, dm.Name, isReadLock)
+	unlock(locks, dm.Name, isReadLock)
 }
 
-func unlock(locks *[]string, name string, isReadLock bool) {
+func unlock(locks []string, name string, isReadLock bool) {
 
 	// We don't need to synchronously wait until we have released all the locks (or the quorum)
 	// (a subsequent lock will retry automatically in case it would fail to get quorum)
 
 	for index, c := range clnts {
 
-		if isLocked((*locks)[index]) {
-			// broadcast lock release to all nodes the granted the lock
-			sendRelease(c, name, (*locks)[index], isReadLock)
-
-			(*locks)[index] = ""
+		if isLocked(locks[index]) {
+			// broadcast lock release to all nodes that granted the lock
+			sendRelease(c, name, locks[index], isReadLock)
 		}
+	}
+}
+
+// ForceUnlock will forcefully clear a write or read lock.
+func (dm *DRWMutex) ForceUnlock() {
+
+	{
+		dm.m.Lock()
+		defer dm.m.Unlock()
+
+		// Clear write locks array
+		dm.writeLocks = make([]string, dnodeCount)
+		// Clear read locks array
+		dm.readersLocks = nil
+	}
+
+	for _, c := range clnts {
+		// broadcast lock release to all nodes that granted the lock
+		sendRelease(c, dm.Name, "", false)
 	}
 }
 
@@ -378,7 +402,20 @@ func sendRelease(c RPC, name, uid string, isReadLock bool) {
 			// i.e. it is safe to call them from multiple concurrently running goroutines.
 			var unlocked bool
 			args := LockArgs{Name: name, UID: uid} // Just send name & uid (and leave out node and rpcPath; unimportant for unlocks)
-			if isReadLock {
+			if len(uid) == 0 {
+				if err := c.Call("Dsync.ForceUnlock", &args, &unlocked); err == nil {
+					// ForceUnlock delivered, exit out
+					return
+				} else if err != nil {
+					if dsyncLog {
+						log.Println("Unable to call Dsync.ForceUnlock", err)
+					}
+					if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
+						// ForceUnlock possibly failed with server timestamp mismatch, server may have restarted.
+						return
+					}
+				}
+			} else if isReadLock {
 				if err := c.Call("Dsync.RUnlock", &args, &unlocked); err == nil {
 					// RUnlock delivered, exit out
 					return

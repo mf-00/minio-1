@@ -50,6 +50,14 @@ func migrateConfig() error {
 	if err := migrateV6ToV7(); err != nil {
 		return err
 	}
+	// Migrate version '7' to '8'.
+	if err := migrateV7ToV8(); err != nil {
+		return err
+	}
+	// Migrate version '8' to '9'.
+	if err := migrateV8ToV9(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -332,7 +340,7 @@ func migrateV6ToV7() error {
 
 	// Save only the new fields, ignore the rest.
 	srvConfig := &serverConfigV7{}
-	srvConfig.Version = globalMinioConfigVersion
+	srvConfig.Version = "7"
 	srvConfig.Credential = cv6.Credential
 	srvConfig.Region = cv6.Region
 	if srvConfig.Region == "" {
@@ -376,5 +384,162 @@ func migrateV6ToV7() error {
 	}
 
 	console.Println("Migration from version ‘" + cv6.Version + "’ to ‘" + srvConfig.Version + "’ completed successfully.")
+	return nil
+}
+
+// Version '7' to '8' migrates config, removes previous fields related
+// to backend types and server address. This change further simplifies
+// the config for future additions.
+func migrateV7ToV8() error {
+	cv7, err := loadConfigV7()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("Unable to load config version ‘7’. %v", err)
+	}
+	if cv7.Version != "7" {
+		return nil
+	}
+
+	// Save only the new fields, ignore the rest.
+	srvConfig := &serverConfigV8{}
+	srvConfig.Version = "8"
+	srvConfig.Credential = cv7.Credential
+	srvConfig.Region = cv7.Region
+	if srvConfig.Region == "" {
+		// Region needs to be set for AWS Signature Version 4.
+		srvConfig.Region = "us-east-1"
+	}
+	srvConfig.Logger.Console = cv7.Logger.Console
+	srvConfig.Logger.File = cv7.Logger.File
+	srvConfig.Logger.Syslog = cv7.Logger.Syslog
+	srvConfig.Notify.AMQP = make(map[string]amqpNotify)
+	srvConfig.Notify.NATS = make(map[string]natsNotify)
+	srvConfig.Notify.ElasticSearch = make(map[string]elasticSearchNotify)
+	srvConfig.Notify.Redis = make(map[string]redisNotify)
+	srvConfig.Notify.PostgreSQL = make(map[string]postgreSQLNotify)
+	if len(cv7.Notify.AMQP) == 0 {
+		srvConfig.Notify.AMQP["1"] = amqpNotify{}
+	} else {
+		srvConfig.Notify.AMQP = cv7.Notify.AMQP
+	}
+	if len(cv7.Notify.NATS) == 0 {
+		srvConfig.Notify.NATS["1"] = natsNotify{}
+	} else {
+		srvConfig.Notify.NATS = cv7.Notify.NATS
+	}
+	if len(cv7.Notify.ElasticSearch) == 0 {
+		srvConfig.Notify.ElasticSearch["1"] = elasticSearchNotify{}
+	} else {
+		srvConfig.Notify.ElasticSearch = cv7.Notify.ElasticSearch
+	}
+	if len(cv7.Notify.Redis) == 0 {
+		srvConfig.Notify.Redis["1"] = redisNotify{}
+	} else {
+		srvConfig.Notify.Redis = cv7.Notify.Redis
+	}
+
+	qc, err := quick.New(srvConfig)
+	if err != nil {
+		return fmt.Errorf("Unable to initialize the quick config. %v", err)
+	}
+	configFile, err := getConfigFile()
+	if err != nil {
+		return fmt.Errorf("Unable to get config file. %v", err)
+	}
+
+	err = qc.Save(configFile)
+	if err != nil {
+		return fmt.Errorf("Failed to migrate config from ‘"+cv7.Version+"’ to ‘"+srvConfig.Version+"’ failed. %v", err)
+	}
+
+	console.Println("Migration from version ‘" + cv7.Version + "’ to ‘" + srvConfig.Version + "’ completed successfully.")
+	return nil
+}
+
+// Version '8' to '9' migration. Adds postgresql notifier
+// configuration, but it's otherwise the same as V8.
+func migrateV8ToV9() error {
+	cv8, err := loadConfigV8()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("Unable to load config version ‘8’. %v", err)
+	}
+	if cv8.Version != "8" {
+		return nil
+	}
+
+	// Copy over fields from V8 into V9 config struct
+	srvConfig := &serverConfigV9{}
+	srvConfig.Version = "9"
+	srvConfig.Credential = cv8.Credential
+	srvConfig.Region = cv8.Region
+	if srvConfig.Region == "" {
+		// Region needs to be set for AWS Signature Version 4.
+		srvConfig.Region = "us-east-1"
+	}
+	srvConfig.Logger.Console = cv8.Logger.Console
+	srvConfig.Logger.File = cv8.Logger.File
+	srvConfig.Logger.Syslog = cv8.Logger.Syslog
+
+	// check and set notifiers config
+	if len(cv8.Notify.AMQP) == 0 {
+		srvConfig.Notify.AMQP = make(map[string]amqpNotify)
+		srvConfig.Notify.AMQP["1"] = amqpNotify{}
+	} else {
+		srvConfig.Notify.AMQP = cv8.Notify.AMQP
+	}
+	if len(cv8.Notify.NATS) == 0 {
+		srvConfig.Notify.NATS = make(map[string]natsNotify)
+		srvConfig.Notify.NATS["1"] = natsNotify{}
+	} else {
+		srvConfig.Notify.NATS = cv8.Notify.NATS
+	}
+	if len(cv8.Notify.ElasticSearch) == 0 {
+		srvConfig.Notify.ElasticSearch = make(map[string]elasticSearchNotify)
+		srvConfig.Notify.ElasticSearch["1"] = elasticSearchNotify{}
+	} else {
+		srvConfig.Notify.ElasticSearch = cv8.Notify.ElasticSearch
+	}
+	if len(cv8.Notify.Redis) == 0 {
+		srvConfig.Notify.Redis = make(map[string]redisNotify)
+		srvConfig.Notify.Redis["1"] = redisNotify{}
+	} else {
+		srvConfig.Notify.Redis = cv8.Notify.Redis
+	}
+	if len(cv8.Notify.PostgreSQL) == 0 {
+		srvConfig.Notify.PostgreSQL = make(map[string]postgreSQLNotify)
+		srvConfig.Notify.PostgreSQL["1"] = postgreSQLNotify{}
+	} else {
+		srvConfig.Notify.PostgreSQL = cv8.Notify.PostgreSQL
+	}
+
+	qc, err := quick.New(srvConfig)
+	if err != nil {
+		return fmt.Errorf("Unable to initialize the quick config. %v",
+			err)
+	}
+	configFile, err := getConfigFile()
+	if err != nil {
+		return fmt.Errorf("Unable to get config file. %v", err)
+	}
+
+	err = qc.Save(configFile)
+	if err != nil {
+		return fmt.Errorf(
+			"Failed to migrate config from ‘"+
+				cv8.Version+"’ to ‘"+srvConfig.Version+
+				"’ failed. %v", err,
+		)
+	}
+
+	console.Println(
+		"Migration from version ‘" +
+			cv8.Version + "’ to ‘" + srvConfig.Version +
+			"’ completed successfully.",
+	)
 	return nil
 }

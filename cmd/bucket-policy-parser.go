@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"sort"
 	"strings"
 
@@ -70,7 +69,7 @@ type bucketPolicy struct {
 func (b bucketPolicy) String() string {
 	bbytes, err := json.Marshal(&b)
 	if err != nil {
-		errorIf(err, "Unable to unmarshal bucket policy into JSON %#v", b)
+		errorIf(err, "Unable to marshal bucket policy into JSON %#v", b)
 		return ""
 	}
 	return string(bbytes)
@@ -224,7 +223,7 @@ func resourcePrefix(resource string) string {
 	if strings.HasSuffix(resource, "*") {
 		resource = strings.TrimSuffix(resource, "*")
 	}
-	return path.Clean(resource)
+	return resource
 }
 
 // checkBucketPolicyResources validates Resources in unmarshalled bucket policy structure.

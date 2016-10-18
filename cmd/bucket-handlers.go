@@ -31,9 +31,8 @@ import (
 // http://docs.aws.amazon.com/AmazonS3/latest/dev/using-with-s3-actions.html
 // Enforces bucket policies for a bucket for a given tatusaction.
 func enforceBucketPolicy(bucket string, action string, reqURL *url.URL) (s3Error APIErrorCode) {
-	// Fetch bucket policy, if policy is not set return access denied.
-	policy, err := readBucketPolicy(bucket, newObjectLayerFn())
-	if err != nil {
+	// Verify if bucket actually exists
+	if err := isBucketExist(bucket, newObjectLayerFn()); err != nil {
 		err = errorCause(err)
 		switch err.(type) {
 		case BucketNameInvalid:
@@ -42,14 +41,16 @@ func enforceBucketPolicy(bucket string, action string, reqURL *url.URL) (s3Error
 		case BucketNotFound:
 			// For no bucket found we return NoSuchBucket instead.
 			return ErrNoSuchBucket
-		case BucketPolicyNotFound:
-			// For no bucket policy found, return AccessDenied, since
-			// anonymous requests are not allowed without bucket policies.
-			return ErrAccessDenied
 		}
 		errorIf(err, "Unable to read bucket policy.")
 		// Return internal error for any other errors so that we can investigate.
 		return ErrInternalError
+	}
+
+	// Fetch bucket policy, if policy is not set return access denied.
+	policy := globalBucketPolicies.GetBucketPolicy(bucket)
+	if policy == nil {
+		return ErrAccessDenied
 	}
 
 	// Construct resource in 'arn:aws:s3:::examplebucket/object' format.
@@ -92,8 +93,15 @@ func (api objectAPIHandlers) GetBucketLocationHandler(w http.ResponseWriter, r *
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypeSigned, authTypePresigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, "us-east-1"); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -148,8 +156,15 @@ func (api objectAPIHandlers) ListMultipartUploadsHandler(w http.ResponseWriter, 
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -184,7 +199,7 @@ func (api objectAPIHandlers) ListMultipartUploadsHandler(w http.ResponseWriter, 
 	writeSuccessResponse(w, encodedSuccessResponse)
 }
 
-// ListBucketsHandler - GET Service
+// ListBucketsHandler - GET Service.
 // -----------
 // This implementation of the GET operation returns a list of all buckets
 // owned by the authenticated sender of the request.
@@ -196,7 +211,9 @@ func (api objectAPIHandlers) ListBucketsHandler(w http.ResponseWriter, r *http.R
 	}
 
 	// List buckets does not support bucket policies, no need to enforce it.
-	if s3Error := checkAuth(r); s3Error != ErrNone {
+	// Proceed to validate signature.
+	// Validates the request for both Presigned and Signed.
+	if s3Error := checkAuthWithRegion(r, ""); s3Error != ErrNone {
 		errorIf(errSignatureMismatch, dumpRequest(r))
 		writeErrorResponse(w, r, s3Error, r.URL.Path)
 		return
@@ -241,8 +258,15 @@ func (api objectAPIHandlers) DeleteMultipleObjectsHandler(w http.ResponseWriter,
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -330,20 +354,18 @@ func (api objectAPIHandlers) DeleteMultipleObjectsHandler(w http.ResponseWriter,
 	// Write success response.
 	writeSuccessResponse(w, encodedSuccessResponse)
 
-	if globalEventNotifier.IsBucketNotificationSet(bucket) {
-		// Notify deleted event for objects.
-		for _, dobj := range deletedObjects {
-			eventNotify(eventData{
-				Type:   ObjectRemovedDelete,
-				Bucket: bucket,
-				ObjInfo: ObjectInfo{
-					Name: dobj.ObjectName,
-				},
-				ReqParams: map[string]string{
-					"sourceIPAddress": r.RemoteAddr,
-				},
-			})
-		}
+	// Notify deleted event for objects.
+	for _, dobj := range deletedObjects {
+		eventNotify(eventData{
+			Type:   ObjectRemovedDelete,
+			Bucket: bucket,
+			ObjInfo: ObjectInfo{
+				Name: dobj.ObjectName,
+			},
+			ReqParams: map[string]string{
+				"sourceIPAddress": r.RemoteAddr,
+			},
+		})
 	}
 }
 
@@ -358,7 +380,7 @@ func (api objectAPIHandlers) PutBucketHandler(w http.ResponseWriter, r *http.Req
 	}
 
 	// PutBucket does not support policies, use checkAuth to validate signature.
-	if s3Error := checkAuth(r); s3Error != ErrNone {
+	if s3Error := checkAuthWithRegion(r, "us-east-1"); s3Error != ErrNone {
 		errorIf(errSignatureMismatch, dumpRequest(r))
 		writeErrorResponse(w, r, s3Error, r.URL.Path)
 		return
@@ -437,7 +459,9 @@ func (api objectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 	metadata := make(map[string]string)
 	// Nothing to store right now.
 
-	objInfo, err := objectAPI.PutObject(bucket, object, -1, fileBody, metadata)
+	sha256sum := ""
+
+	objInfo, err := objectAPI.PutObject(bucket, object, -1, fileBody, metadata, sha256sum)
 	if err != nil {
 		errorIf(err, "Unable to create object.")
 		writeErrorResponse(w, r, toAPIErrorCode(err), r.URL.Path)
@@ -452,17 +476,15 @@ func (api objectAPIHandlers) PostPolicyBucketHandler(w http.ResponseWriter, r *h
 	// Write successful response.
 	writeSuccessNoContent(w)
 
-	if globalEventNotifier.IsBucketNotificationSet(bucket) {
-		// Notify object created event.
-		eventNotify(eventData{
-			Type:    ObjectCreatedPost,
-			Bucket:  bucket,
-			ObjInfo: objInfo,
-			ReqParams: map[string]string{
-				"sourceIPAddress": r.RemoteAddr,
-			},
-		})
-	}
+	// Notify object created event.
+	eventNotify(eventData{
+		Type:    ObjectCreatedPost,
+		Bucket:  bucket,
+		ObjInfo: objInfo,
+		ReqParams: map[string]string{
+			"sourceIPAddress": r.RemoteAddr,
+		},
+	})
 }
 
 // HeadBucketHandler - HEAD Bucket
@@ -480,7 +502,6 @@ func (api objectAPIHandlers) HeadBucketHandler(w http.ResponseWriter, r *http.Re
 		writeErrorResponse(w, r, ErrServerNotInitialized, r.URL.Path)
 		return
 	}
-
 	switch getRequestAuthType(r) {
 	default:
 		// For all unknown auth types return error.
@@ -492,8 +513,15 @@ func (api objectAPIHandlers) HeadBucketHandler(w http.ResponseWriter, r *http.Re
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return

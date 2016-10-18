@@ -27,8 +27,8 @@ import (
 	"strings"
 	"testing"
 
-	router "github.com/gorilla/mux"
 	"github.com/minio/minio-go/pkg/policy"
+	"github.com/minio/minio-go/pkg/set"
 )
 
 // Authenticate and get JWT token - will be called before every webrpc handler invocation
@@ -351,7 +351,7 @@ func testListObjectsWebHandler(obj ObjectLayer, instanceType string, t TestErrHa
 
 	data := bytes.Repeat([]byte("a"), objectSize)
 
-	_, err = obj.PutObject(bucketName, objectName, int64(len(data)), bytes.NewReader(data), map[string]string{"md5Sum": "c9a34cfc85d982698c6ac89f76071abd"})
+	_, err = obj.PutObject(bucketName, objectName, int64(len(data)), bytes.NewReader(data), map[string]string{"md5Sum": "c9a34cfc85d982698c6ac89f76071abd"}, "")
 
 	if err != nil {
 		t.Fatalf("Was not able to upload an object, %v", err)
@@ -422,7 +422,7 @@ func testRemoveObjectWebHandler(obj ObjectLayer, instanceType string, t TestErrH
 
 	data := bytes.Repeat([]byte("a"), objectSize)
 
-	_, err = obj.PutObject(bucketName, objectName, int64(len(data)), bytes.NewReader(data), map[string]string{"md5Sum": "c9a34cfc85d982698c6ac89f76071abd"})
+	_, err = obj.PutObject(bucketName, objectName, int64(len(data)), bytes.NewReader(data), map[string]string{"md5Sum": "c9a34cfc85d982698c6ac89f76071abd"}, "")
 
 	if err != nil {
 		t.Fatalf("Was not able to upload an object, %v", err)
@@ -696,7 +696,7 @@ func testDownloadWebHandler(obj ObjectLayer, instanceType string, t TestErrHandl
 	}
 
 	content := []byte("temporary file's content")
-	_, err = obj.PutObject(bucketName, objectName, int64(len(content)), bytes.NewReader(content), map[string]string{"md5Sum": "01ce59706106fe5e02e7f55fffda7f34"})
+	_, err = obj.PutObject(bucketName, objectName, int64(len(content)), bytes.NewReader(content), map[string]string{"md5Sum": "01ce59706106fe5e02e7f55fffda7f34"}, "")
 	if err != nil {
 		t.Fatalf("Was not able to upload an object, %v", err)
 	}
@@ -755,7 +755,7 @@ func testWebPresignedGetHandler(obj ObjectLayer, instanceType string, t TestErrH
 	}
 
 	data := bytes.Repeat([]byte("a"), objectSize)
-	_, err = obj.PutObject(bucketName, objectName, int64(len(data)), bytes.NewReader(data), map[string]string{"md5Sum": "c9a34cfc85d982698c6ac89f76071abd"})
+	_, err = obj.PutObject(bucketName, objectName, int64(len(data)), bytes.NewReader(data), map[string]string{"md5Sum": "c9a34cfc85d982698c6ac89f76071abd"}, "")
 	if err != nil {
 		t.Fatalf("Was not able to upload an object, %v", err)
 	}
@@ -835,8 +835,26 @@ func testWebGetBucketPolicyHandler(obj ObjectLayer, instanceType string, t TestE
 		t.Fatal("Unexpected error: ", err)
 	}
 
-	policyDoc := "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Action\":[\"s3:GetBucketLocation\",\"s3:ListBucket\"],\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Resource\":[\"arn:aws:s3:::" + bucketName + "\"],\"Sid\":\"\"},{\"Action\":[\"s3:GetObject\"],\"Effect\":\"Allow\",\"Principal\":{\"AWS\":[\"*\"]},\"Resource\":[\"arn:aws:s3:::" + bucketName + "/*\"],\"Sid\":\"\"}]}"
-	if err := writeBucketPolicy(bucketName, obj, bytes.NewReader([]byte(policyDoc)), int64(len(policyDoc))); err != nil {
+	policyVal := bucketPolicy{
+		Version: "2012-10-17",
+		Statements: []policyStatement{
+			{
+				Actions:   set.CreateStringSet("s3:GetBucketLocation", "s3:ListBucket"),
+				Effect:    "Allow",
+				Principal: map[string][]string{"AWS": {"*"}},
+				Resources: set.CreateStringSet("arn:aws:s3:::" + bucketName),
+				Sid:       "",
+			},
+			{
+				Actions:   set.CreateStringSet("s3:GetObject"),
+				Effect:    "Allow",
+				Principal: map[string][]string{"AWS": {"*"}},
+				Resources: set.CreateStringSet("arn:aws:s3:::" + bucketName + "/*"),
+				Sid:       "",
+			},
+		},
+	}
+	if err := writeBucketPolicy(bucketName, obj, &policyVal); err != nil {
 		t.Fatal("Unexpected error: ", err)
 	}
 
@@ -868,13 +886,13 @@ func testWebGetBucketPolicyHandler(obj ObjectLayer, instanceType string, t TestE
 	}
 }
 
-// Wrapper for calling GetAllBucketPolicy Handler
-func TestWebHandlerGetAllBucketPolicyHandler(t *testing.T) {
-	ExecObjectLayerTest(t, testWebGetAllBucketPolicyHandler)
+// Wrapper for calling ListAllBucketPolicies Handler
+func TestWebHandlerListAllBucketPoliciesHandler(t *testing.T) {
+	ExecObjectLayerTest(t, testWebListAllBucketPoliciesHandler)
 }
 
-// testWebGetAllBucketPolicyHandler - Test GetAllBucketPolicy web handler
-func testWebGetAllBucketPolicyHandler(obj ObjectLayer, instanceType string, t TestErrHandler) {
+// testWebListAllBucketPoliciesHandler - Test ListAllBucketPolicies web handler
+func testWebListAllBucketPoliciesHandler(obj ObjectLayer, instanceType string, t TestErrHandler) {
 	// Register the API end points with XL/FS object layer.
 	apiRouter := initTestWebRPCEndPoint(obj)
 	// initialize the server and obtain the credentials and root.
@@ -900,24 +918,64 @@ func testWebGetAllBucketPolicyHandler(obj ObjectLayer, instanceType string, t Te
 		t.Fatal("Unexpected error: ", err)
 	}
 
-	policyDoc := `{"Version":"2012-10-17","Statement":[{"Action":["s3:GetBucketLocation"],"Effect":"Allow","Principal":{"AWS":["*"]},"Resource":["arn:aws:s3:::` + bucketName + `"],"Sid":""},{"Action":["s3:ListBucket"],"Condition":{"StringEquals":{"s3:prefix":["hello"]}},"Effect":"Allow","Principal":{"AWS":["*"]},"Resource":["arn:aws:s3:::` + bucketName + `"],"Sid":""},{"Action":["s3:ListBucketMultipartUploads"],"Effect":"Allow","Principal":{"AWS":["*"]},"Resource":["arn:aws:s3:::` + bucketName + `"],"Sid":""},{"Action":["s3:AbortMultipartUpload","s3:DeleteObject","s3:GetObject","s3:ListMultipartUploadParts","s3:PutObject"],"Effect":"Allow","Principal":{"AWS":["*"]},"Resource":["arn:aws:s3:::` + bucketName + `/hello*"],"Sid":""}]}`
-	if err := writeBucketPolicy(bucketName, obj, bytes.NewReader([]byte(policyDoc)), int64(len(policyDoc))); err != nil {
+	policyVal := bucketPolicy{
+		Version: "2012-10-17",
+		Statements: []policyStatement{
+			{
+				Actions:   set.CreateStringSet("s3:GetBucketLocation"),
+				Effect:    "Allow",
+				Principal: map[string][]string{"AWS": {"*"}},
+				Resources: set.CreateStringSet("arn:aws:s3:::" + bucketName),
+				Sid:       "",
+			},
+			{
+				Actions: set.CreateStringSet("s3:ListBucket"),
+				Conditions: map[string]map[string]set.StringSet{
+					"StringEquals": {
+						"s3:prefix": set.CreateStringSet("hello"),
+					},
+				},
+				Effect:    "Allow",
+				Principal: map[string][]string{"AWS": {"*"}},
+				Resources: set.CreateStringSet("arn:aws:s3:::" + bucketName),
+				Sid:       "",
+			},
+			{
+				Actions:   set.CreateStringSet("s3:ListBucketMultipartUploads"),
+				Effect:    "Allow",
+				Principal: map[string][]string{"AWS": {"*"}},
+				Resources: set.CreateStringSet("arn:aws:s3:::" + bucketName),
+				Sid:       "",
+			},
+			{
+				Actions: set.CreateStringSet("s3:AbortMultipartUpload", "s3:DeleteObject",
+					"s3:GetObject", "s3:ListMultipartUploadParts", "s3:PutObject"),
+				Effect:    "Allow",
+				Principal: map[string][]string{"AWS": {"*"}},
+				Resources: set.CreateStringSet("arn:aws:s3:::" + bucketName + "/hello*"),
+				Sid:       "",
+			},
+		},
+	}
+	if err := writeBucketPolicy(bucketName, obj, &policyVal); err != nil {
 		t.Fatal("Unexpected error: ", err)
 	}
 
-	testCaseResult1 := make(map[string]policy.BucketPolicy)
-	testCaseResult1[bucketName+"/hello*"] = policy.BucketPolicyReadWrite
+	testCaseResult1 := []bucketAccessPolicy{{
+		Prefix: bucketName + "/hello*",
+		Policy: policy.BucketPolicyReadWrite,
+	}}
 	testCases := []struct {
 		bucketName     string
-		expectedResult map[string]policy.BucketPolicy
+		expectedResult []bucketAccessPolicy
 	}{
 		{bucketName, testCaseResult1},
 	}
 
 	for i, testCase := range testCases {
-		args := &GetAllBucketPolicyArgs{BucketName: testCase.bucketName}
-		reply := &GetAllBucketPolicyRep{}
-		req, err := newTestWebRPCRequest("Web.GetAllBucketPolicy", authorization, args)
+		args := &ListAllBucketPoliciesArgs{BucketName: testCase.bucketName}
+		reply := &ListAllBucketPoliciesRep{}
+		req, err := newTestWebRPCRequest("Web.ListAllBucketPolicies", authorization, args)
 		if err != nil {
 			t.Fatalf("Test %d: Failed to create HTTP request: <ERROR> %v", i+1, err)
 		}
@@ -981,6 +1039,10 @@ func testWebSetBucketPolicyHandler(obj ObjectLayer, instanceType string, t TestE
 		{bucketName, "", "foo", false},
 		// Valid parameters
 		{bucketName, "", "readwrite", true},
+		// None is valid and policy should be removed.
+		{bucketName, "", "none", true},
+		// Setting none again meants should return an error.
+		{bucketName, "", "none", false},
 	}
 
 	for i, testCase := range testCases {
@@ -993,7 +1055,7 @@ func testWebSetBucketPolicyHandler(obj ObjectLayer, instanceType string, t TestE
 		}
 		apiRouter.ServeHTTP(rec, req)
 		// Check if we have 200 OK
-		if rec.Code != http.StatusOK {
+		if testCase.pass && rec.Code != http.StatusOK {
 			t.Fatalf("Test %d: Expected the response status to be 200, but instead found `%d`", i+1, rec.Code)
 		}
 		// Parse RPC response
@@ -1010,9 +1072,9 @@ func testWebSetBucketPolicyHandler(obj ObjectLayer, instanceType string, t TestE
 // TestWebCheckAuthorization - Test Authorization for all web handlers
 func TestWebCheckAuthorization(t *testing.T) {
 	// Prepare XL backend
-	obj, fsDirs, e := prepareXL()
-	if e != nil {
-		t.Fatalf("Initialization of object layer failed for XL setup: %s", e)
+	obj, fsDirs, err := prepareXL()
+	if err != nil {
+		t.Fatalf("Initialization of object layer failed for XL setup: %s", err)
 	}
 	// Executing the object layer tests for XL.
 	defer removeRoots(fsDirs)
@@ -1021,9 +1083,9 @@ func TestWebCheckAuthorization(t *testing.T) {
 	apiRouter := initTestWebRPCEndPoint(obj)
 	// initialize the server and obtain the credentials and root.
 	// credentials are necessary to sign the HTTP request.
-	rootPath, e := newTestConfig("us-east-1")
-	if e != nil {
-		t.Fatalf("Init Test config failed")
+	rootPath, err := newTestConfig("us-east-1")
+	if err != nil {
+		t.Fatal("Init Test config failed", err)
 	}
 	// remove the root folder after the test ends.
 	defer removeAll(rootPath)
@@ -1036,9 +1098,9 @@ func TestWebCheckAuthorization(t *testing.T) {
 	for _, rpcCall := range webRPCs {
 		args := &GenericArgs{}
 		reply := &WebGenericRep{}
-		req, err := newTestWebRPCRequest("Web."+rpcCall, "Bearer fooauthorization", args)
-		if err != nil {
-			t.Fatalf("Test %s: Failed to create HTTP request: <ERROR> %v", rpcCall, err)
+		req, nerr := newTestWebRPCRequest("Web."+rpcCall, "Bearer fooauthorization", args)
+		if nerr != nil {
+			t.Fatalf("Test %s: Failed to create HTTP request: <ERROR> %v", rpcCall, nerr)
 		}
 		apiRouter.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -1091,18 +1153,14 @@ func TestWebCheckAuthorization(t *testing.T) {
 
 // TestWebObjectLayerNotReady - Test RPCs responses when disks are not ready
 func TestWebObjectLayerNotReady(t *testing.T) {
-	webHandlers := &webAPIHandlers{
-		ObjectAPI: func() ObjectLayer { return nil },
-	}
-	// Initialize router.
-	apiRouter := router.NewRouter()
-	registerWebRouter(apiRouter, webHandlers)
+	// Initialize web rpc endpoint.
+	apiRouter := initTestWebRPCEndPoint(nil)
 
 	// initialize the server and obtain the credentials and root.
 	// credentials are necessary to sign the HTTP request.
-	rootPath, e := newTestConfig("us-east-1")
-	if e != nil {
-		t.Fatalf("Init Test config failed")
+	rootPath, err := newTestConfig("us-east-1")
+	if err != nil {
+		t.Fatal("Init Test config failed", err)
 	}
 	// remove the root folder after the test ends.
 	defer removeAll(rootPath)
@@ -1110,9 +1168,9 @@ func TestWebObjectLayerNotReady(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	credentials := serverConfig.GetCredential()
-	authorization, e := getWebRPCToken(apiRouter, credentials.AccessKeyID, credentials.SecretAccessKey)
-	if e != nil {
-		t.Fatal("Cannot authenticate")
+	authorization, err := getWebRPCToken(apiRouter, credentials.AccessKeyID, credentials.SecretAccessKey)
+	if err != nil {
+		t.Fatal("Cannot authenticate", err)
 	}
 
 	// Check if web rpc calls return Server not initialized. ServerInfo, GenerateAuth,
@@ -1122,9 +1180,9 @@ func TestWebObjectLayerNotReady(t *testing.T) {
 	for _, rpcCall := range webRPCs {
 		args := &GenericArgs{}
 		reply := &WebGenericRep{}
-		req, err := newTestWebRPCRequest("Web."+rpcCall, authorization, args)
-		if err != nil {
-			t.Fatalf("Test %s: Failed to create HTTP request: <ERROR> %v", rpcCall, err)
+		req, nerr := newTestWebRPCRequest("Web."+rpcCall, authorization, args)
+		if nerr != nil {
+			t.Fatalf("Test %s: Failed to create HTTP request: <ERROR> %v", rpcCall, nerr)
 		}
 		apiRouter.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -1178,9 +1236,9 @@ func TestWebObjectLayerNotReady(t *testing.T) {
 // TestWebObjectLayerFaultyDisks - Test Web RPC responses with faulty disks
 func TestWebObjectLayerFaultyDisks(t *testing.T) {
 	// Prepare XL backend
-	obj, fsDirs, e := prepareXL()
-	if e != nil {
-		t.Fatalf("Initialization of object layer failed for XL setup: %s", e)
+	obj, fsDirs, err := prepareXL()
+	if err != nil {
+		t.Fatalf("Initialization of object layer failed for XL setup: %s", err)
 	}
 	// Executing the object layer tests for XL.
 	defer removeRoots(fsDirs)
@@ -1191,18 +1249,14 @@ func TestWebObjectLayerFaultyDisks(t *testing.T) {
 		xl.storageDisks[i] = newNaughtyDisk(d.(*posix), nil, errFaultyDisk)
 	}
 
-	webHandlers := &webAPIHandlers{
-		ObjectAPI: func() ObjectLayer { return obj },
-	}
-	// Initialize router.
-	apiRouter := router.NewRouter()
-	registerWebRouter(apiRouter, webHandlers)
+	// Initialize web rpc endpoint.
+	apiRouter := initTestWebRPCEndPoint(obj)
 
 	// initialize the server and obtain the credentials and root.
 	// credentials are necessary to sign the HTTP request.
-	rootPath, e := newTestConfig("us-east-1")
-	if e != nil {
-		t.Fatalf("Init Test config failed")
+	rootPath, err := newTestConfig("us-east-1")
+	if err != nil {
+		t.Fatal("Init Test config failed", err)
 	}
 	// remove the root folder after the test ends.
 	defer removeAll(rootPath)
@@ -1210,9 +1264,9 @@ func TestWebObjectLayerFaultyDisks(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	credentials := serverConfig.GetCredential()
-	authorization, e := getWebRPCToken(apiRouter, credentials.AccessKeyID, credentials.SecretAccessKey)
-	if e != nil {
-		t.Fatal("Cannot authenticate")
+	authorization, err := getWebRPCToken(apiRouter, credentials.AccessKeyID, credentials.SecretAccessKey)
+	if err != nil {
+		t.Fatal("Cannot authenticate", err)
 	}
 
 	// Check if web rpc calls return errors with faulty disks.  ServerInfo, GenerateAuth, SetAuth, GetAuth are not concerned
@@ -1222,9 +1276,9 @@ func TestWebObjectLayerFaultyDisks(t *testing.T) {
 	for _, rpcCall := range webRPCs {
 		args := &GenericArgs{}
 		reply := &WebGenericRep{}
-		req, err := newTestWebRPCRequest("Web."+rpcCall, authorization, args)
-		if err != nil {
-			t.Fatalf("Test %s: Failed to create HTTP request: <ERROR> %v", rpcCall, err)
+		req, nerr := newTestWebRPCRequest("Web."+rpcCall, authorization, args)
+		if nerr != nil {
+			t.Fatalf("Test %s: Failed to create HTTP request: <ERROR> %v", rpcCall, nerr)
 		}
 		apiRouter.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {

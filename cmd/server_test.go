@@ -81,7 +81,7 @@ func (s *TestSuiteCommon) TestBucketSQSNotification(c *C) {
 	// generate a random bucket Name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -93,7 +93,7 @@ func (s *TestSuiteCommon) TestBucketSQSNotification(c *C) {
 	// assert the http response status code.
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
-	request, err = newTestSignedRequest("PUT", getPutNotificationURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("PUT", getPutNotificationURL(s.endPoint, bucketName),
 		int64(len(bucketNotificationBuf)), bytes.NewReader([]byte(bucketNotificationBuf)), s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -103,125 +103,6 @@ func (s *TestSuiteCommon) TestBucketSQSNotification(c *C) {
 
 	c.Assert(err, IsNil)
 	verifyError(c, response, "InvalidArgument", "A specified destination ARN does not exist or is not well-formed. Verify the destination ARN.", http.StatusBadRequest)
-}
-
-// TestBucketNotification - Inserts the bucket notification and verifies it by fetching the notification back.
-func (s *TestSuiteCommon) TestBucketSNSNotification(c *C) {
-	// Sample bucket notification.
-	bucketNotificationBuf := `<NotificationConfiguration><TopicConfiguration><Event>s3:ObjectCreated:Put</Event><Filter><S3Key><FilterRule><Name>prefix</Name><Value>images/</Value></FilterRule></S3Key></Filter><Id>1</Id><Topic>arn:minio:sns:us-east-1:444455556666:listen</Topic></TopicConfiguration></NotificationConfiguration>`
-
-	// generate a random bucket Name.
-	bucketName := getRandomBucketName()
-	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
-		0, nil, s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client := http.Client{}
-	// execute the request.
-	response, err := client.Do(request)
-	c.Assert(err, IsNil)
-	// assert the http response status code.
-	c.Assert(response.StatusCode, Equals, http.StatusOK)
-
-	request, err = newTestSignedRequest("PUT", getPutNotificationURL(s.endPoint, bucketName),
-		int64(len(bucketNotificationBuf)), bytes.NewReader([]byte(bucketNotificationBuf)), s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client = http.Client{}
-	// execute the HTTP request.
-	response, err = client.Do(request)
-
-	c.Assert(err, IsNil)
-	c.Assert(response.StatusCode, Equals, http.StatusOK)
-
-	// Fetch the uploaded policy.
-	request, err = newTestSignedRequest("GET", getGetNotificationURL(s.endPoint, bucketName), 0, nil,
-		s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client = http.Client{}
-	response, err = client.Do(request)
-	c.Assert(err, IsNil)
-	c.Assert(response.StatusCode, Equals, http.StatusOK)
-
-	bucketNotificationReadBuf, err := ioutil.ReadAll(response.Body)
-	c.Assert(err, IsNil)
-	// Verify if downloaded policy matches with previousy uploaded.
-	c.Assert(bytes.Equal([]byte(bucketNotificationBuf), bucketNotificationReadBuf), Equals, true)
-
-	invalidBucketNotificationBuf := `<NotificationConfiguration><TopicConfiguration><Event>s3:ObjectCreated:Put</Event><Filter><S3Key><FilterRule><Name>invalid</Name><Value>images/</Value></FilterRule></S3Key></Filter><Id>1</Id><Topic>arn:minio:sns:us-east-1:444455556666:minio</Topic></TopicConfiguration></NotificationConfiguration>`
-
-	request, err = newTestSignedRequest("PUT", getPutNotificationURL(s.endPoint, bucketName),
-		int64(len(invalidBucketNotificationBuf)), bytes.NewReader([]byte(invalidBucketNotificationBuf)), s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client = http.Client{}
-	// execute the HTTP request.
-	response, err = client.Do(request)
-	c.Assert(err, IsNil)
-
-	verifyError(c, response, "InvalidArgument", "A specified destination ARN does not exist or is not well-formed. Verify the destination ARN.", http.StatusBadRequest)
-
-	invalidBucketNotificationBuf = `<NotificationConfiguration><TopicConfiguration><Event>s3:ObjectCreated:Put</Event><Filter><S3Key><FilterRule><Name>invalid</Name><Value>images/</Value></FilterRule></S3Key></Filter><Id>1</Id><Topic>arn:minio:sns:us-east-1:1:listen</Topic></TopicConfiguration></NotificationConfiguration>`
-
-	request, err = newTestSignedRequest("PUT", getPutNotificationURL(s.endPoint, bucketName),
-		int64(len(invalidBucketNotificationBuf)), bytes.NewReader([]byte(invalidBucketNotificationBuf)), s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client = http.Client{}
-	// execute the HTTP request.
-	response, err = client.Do(request)
-	c.Assert(err, IsNil)
-
-	verifyError(c, response, "InvalidArgument", "filter rule name must be either prefix or suffix", http.StatusBadRequest)
-
-	invalidBucketNotificationBuf = `<NotificationConfiguration><TopicConfiguration><Event>s3:ObjectCreated:Put</Event><Filter><S3Key><FilterRule><Name>prefix</Name><Value>|||</Value></FilterRule></S3Key></Filter><Id>1</Id><Topic>arn:minio:sns:us-east-1:1:listen</Topic></TopicConfiguration></NotificationConfiguration>`
-
-	request, err = newTestSignedRequest("PUT", getPutNotificationURL(s.endPoint, bucketName),
-		int64(len(invalidBucketNotificationBuf)), bytes.NewReader([]byte(invalidBucketNotificationBuf)), s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client = http.Client{}
-	// execute the HTTP request.
-	response, err = client.Do(request)
-	c.Assert(err, IsNil)
-
-	verifyError(c, response, "InvalidArgument", "Size of filter rule value cannot exceed 1024 bytes in UTF-8 representation", http.StatusBadRequest)
-
-	invalidBucketNotificationBuf = `<NotificationConfiguration><TopicConfiguration><Event>s3:ObjectCreated:Put</Event><Filter><S3Key><FilterRule><Name>prefix</Name><Value>images/</Value></FilterRule></S3Key></Filter><Id>1</Id><Topic>arn:minio:sns:us-west-1:444455556666:listen</Topic></TopicConfiguration></NotificationConfiguration>`
-	request, err = newTestSignedRequest("PUT", getPutNotificationURL(s.endPoint, bucketName),
-		int64(len(invalidBucketNotificationBuf)), bytes.NewReader([]byte(invalidBucketNotificationBuf)), s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client = http.Client{}
-	// execute the HTTP request.
-	response, err = client.Do(request)
-	c.Assert(err, IsNil)
-
-	verifyError(c, response, "InvalidArgument", "A specified destination is in a different region than the bucket. You must use a destination that resides in the same region as the bucket.", http.StatusBadRequest)
-
-	invalidBucketNotificationBuf = `<NotificationConfiguration><TopicConfiguration><Event>s3:ObjectCreated:Invalid</Event><Filter><S3Key><FilterRule><Name>prefix</Name><Value>images/</Value></FilterRule></S3Key></Filter><Id>1</Id><Topic>arn:minio:sns:us-east-1:444455556666:listen</Topic></TopicConfiguration></NotificationConfiguration>`
-	request, err = newTestSignedRequest("PUT", getPutNotificationURL(s.endPoint, bucketName),
-		int64(len(invalidBucketNotificationBuf)), bytes.NewReader([]byte(invalidBucketNotificationBuf)), s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client = http.Client{}
-	// execute the HTTP request.
-	response, err = client.Do(request)
-	c.Assert(err, IsNil)
-	verifyError(c, response, "InvalidArgument", "A specified event is not supported for notifications.", http.StatusBadRequest)
-
-	bucketNotificationDuplicates := `<NotificationConfiguration><TopicConfiguration><Event>s3:ObjectCreated:Put</Event><Filter><S3Key><FilterRule><Name>prefix</Name><Value>images/</Value></FilterRule></S3Key></Filter><Id>1</Id><Topic>arn:minio:sns:us-east-1:444455556666:listen</Topic></TopicConfiguration><TopicConfiguration><Event>s3:ObjectCreated:Put</Event><Filter><S3Key><FilterRule><Name>prefix</Name><Value>images/</Value></FilterRule></S3Key></Filter><Id>1</Id><Topic>arn:minio:sns:us-east-1:444455556666:listen</Topic></TopicConfiguration></NotificationConfiguration>`
-	request, err = newTestSignedRequest("PUT", getPutNotificationURL(s.endPoint, bucketName),
-		int64(len(bucketNotificationDuplicates)), bytes.NewReader([]byte(bucketNotificationDuplicates)), s.accessKey, s.secretKey)
-	c.Assert(err, IsNil)
-
-	client = http.Client{}
-	// execute the HTTP request.
-	response, err = client.Do(request)
-	c.Assert(err, IsNil)
-	verifyError(c, response, "InvalidArgument", "Configurations overlap. Configurations on the same bucket cannot share a common event type.", http.StatusBadRequest)
 }
 
 // TestBucketPolicy - Inserts the bucket policy and verifies it by fetching the policy back.
@@ -235,7 +116,7 @@ func (s *TestSuiteCommon) TestBucketPolicy(c *C) {
 	// create the policy statement string with the randomly generated bucket name.
 	bucketPolicyStr := fmt.Sprintf(bucketPolicyBuf, bucketName, bucketName)
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -247,7 +128,7 @@ func (s *TestSuiteCommon) TestBucketPolicy(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	/// Put a new bucket policy.
-	request, err = newTestSignedRequest("PUT", getPutPolicyURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("PUT", getPutPolicyURL(s.endPoint, bucketName),
 		int64(len(bucketPolicyStr)), bytes.NewReader([]byte(bucketPolicyStr)), s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -258,7 +139,7 @@ func (s *TestSuiteCommon) TestBucketPolicy(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusNoContent)
 
 	// Fetch the uploaded policy.
-	request, err = newTestSignedRequest("GET", getGetPolicyURL(s.endPoint, bucketName), 0, nil,
+	request, err = newTestSignedRequestV4("GET", getGetPolicyURL(s.endPoint, bucketName), 0, nil,
 		s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -273,7 +154,7 @@ func (s *TestSuiteCommon) TestBucketPolicy(c *C) {
 	c.Assert(bytes.Equal([]byte(bucketPolicyStr), bucketPolicyReadBuf), Equals, true)
 
 	// Delete policy.
-	request, err = newTestSignedRequest("DELETE", getDeletePolicyURL(s.endPoint, bucketName), 0, nil,
+	request, err = newTestSignedRequestV4("DELETE", getDeletePolicyURL(s.endPoint, bucketName), 0, nil,
 		s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -283,7 +164,7 @@ func (s *TestSuiteCommon) TestBucketPolicy(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusNoContent)
 
 	// Verify if the policy was indeed deleted.
-	request, err = newTestSignedRequest("GET", getGetPolicyURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("GET", getGetPolicyURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -298,7 +179,7 @@ func (s *TestSuiteCommon) TestDeleteBucket(c *C) {
 	bucketName := getRandomBucketName()
 
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -309,7 +190,7 @@ func (s *TestSuiteCommon) TestDeleteBucket(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// construct request to delete the bucket.
-	request, err = newTestSignedRequest("DELETE", getDeleteBucketURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("DELETE", getDeleteBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -326,7 +207,7 @@ func (s *TestSuiteCommon) TestDeleteBucketNotEmpty(c *C) {
 	bucketName := getRandomBucketName()
 
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -340,7 +221,7 @@ func (s *TestSuiteCommon) TestDeleteBucketNotEmpty(c *C) {
 	// generate http request for an object upload.
 	// "test-object" is the object name.
 	objectName := "test-object"
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -354,7 +235,7 @@ func (s *TestSuiteCommon) TestDeleteBucketNotEmpty(c *C) {
 	// constructing http request to delete the bucket.
 	// making an attempt to delete an non-empty bucket.
 	// expected to fail.
-	request, err = newTestSignedRequest("DELETE", getDeleteBucketURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("DELETE", getDeleteBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -370,7 +251,7 @@ func (s *TestSuiteCommon) TestDeleteMultipleObjects(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -389,7 +270,7 @@ func (s *TestSuiteCommon) TestDeleteMultipleObjects(c *C) {
 		// Obtain http request to upload object.
 		// object Name contains a prefix.
 		objName := fmt.Sprintf("%d/%s", i, objectName)
-		request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objName),
+		request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objName),
 			0, nil, s.accessKey, s.secretKey)
 		c.Assert(err, IsNil)
 
@@ -409,7 +290,7 @@ func (s *TestSuiteCommon) TestDeleteMultipleObjects(c *C) {
 	c.Assert(err, IsNil)
 
 	// Delete list of objects.
-	request, err = newTestSignedRequest("POST", getMultiDeleteObjectURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("POST", getMultiDeleteObjectURL(s.endPoint, bucketName),
 		int64(len(deleteReqBytes)), bytes.NewReader(deleteReqBytes), s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -430,7 +311,7 @@ func (s *TestSuiteCommon) TestDeleteMultipleObjects(c *C) {
 
 	// Attempt second time results should be same, NoSuchKey for objects not found
 	// shouldn't be set.
-	request, err = newTestSignedRequest("POST", getMultiDeleteObjectURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("POST", getMultiDeleteObjectURL(s.endPoint, bucketName),
 		int64(len(deleteReqBytes)), bytes.NewReader(deleteReqBytes), s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -454,7 +335,7 @@ func (s *TestSuiteCommon) TestDeleteObject(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -468,7 +349,7 @@ func (s *TestSuiteCommon) TestDeleteObject(c *C) {
 	objectName := "prefix/myobject"
 	// obtain http request to upload object.
 	// object Name contains a prefix.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -481,7 +362,7 @@ func (s *TestSuiteCommon) TestDeleteObject(c *C) {
 
 	// object name was "prefix/myobject", an attempt to delelte "prefix"
 	// Should not delete "prefix/myobject"
-	request, err = newTestSignedRequest("DELETE", getDeleteObjectURL(s.endPoint, bucketName, "prefix"),
+	request, err = newTestSignedRequestV4("DELETE", getDeleteObjectURL(s.endPoint, bucketName, "prefix"),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -491,7 +372,7 @@ func (s *TestSuiteCommon) TestDeleteObject(c *C) {
 
 	// create http request to HEAD on the object.
 	// this helps to validate the existence of the bucket.
-	request, err = newTestSignedRequest("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -502,7 +383,7 @@ func (s *TestSuiteCommon) TestDeleteObject(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// create HTTP request to delete the object.
-	request, err = newTestSignedRequest("DELETE", getDeleteObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("DELETE", getDeleteObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -513,7 +394,7 @@ func (s *TestSuiteCommon) TestDeleteObject(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusNoContent)
 
 	// Delete of non-existent data should return success.
-	request, err = newTestSignedRequest("DELETE", getDeleteObjectURL(s.endPoint, bucketName, "prefix/myobject1"),
+	request, err = newTestSignedRequestV4("DELETE", getDeleteObjectURL(s.endPoint, bucketName, "prefix/myobject1"),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -530,7 +411,7 @@ func (s *TestSuiteCommon) TestNonExistentBucket(c *C) {
 	bucketName := getRandomBucketName()
 	// create request to HEAD on the bucket.
 	// HEAD on an bucket helps validate the existence of the bucket.
-	request, err := newTestSignedRequest("HEAD", getHEADBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("HEAD", getHEADBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -547,7 +428,7 @@ func (s *TestSuiteCommon) TestEmptyObject(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -560,7 +441,7 @@ func (s *TestSuiteCommon) TestEmptyObject(c *C) {
 
 	objectName := "test-object"
 	// construct http request for uploading the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -572,7 +453,7 @@ func (s *TestSuiteCommon) TestEmptyObject(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// make HTTP request to fetch the object.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -595,7 +476,7 @@ func (s *TestSuiteCommon) TestBucket(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -604,7 +485,7 @@ func (s *TestSuiteCommon) TestBucket(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
-	request, err = newTestSignedRequest("HEAD", getMakeBucketURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("HEAD", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -620,7 +501,7 @@ func (s *TestSuiteCommon) TestObjectGetAnonymous(c *C) {
 	bucketName := getRandomBucketName()
 	buffer := bytes.NewReader([]byte("hello world"))
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -633,7 +514,7 @@ func (s *TestSuiteCommon) TestObjectGetAnonymous(c *C) {
 
 	objectName := "testObject"
 	// create HTTP request to upload the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer.Len()), buffer, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -663,7 +544,7 @@ func (s *TestSuiteCommon) TestObjectGet(c *C) {
 	bucketName := getRandomBucketName()
 	buffer := bytes.NewReader([]byte("hello world"))
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -676,7 +557,7 @@ func (s *TestSuiteCommon) TestObjectGet(c *C) {
 
 	objectName := "testObject"
 	// create HTTP request to upload the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer.Len()), buffer, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -694,7 +575,7 @@ func (s *TestSuiteCommon) TestObjectGet(c *C) {
 			defer wg.Done()
 			// HTTP request to create the bucket.
 			// create HTTP request to fetch the object.
-			getRequest, err := newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+			getRequest, err := newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 				0, nil, s.accessKey, s.secretKey)
 			c.Assert(err, IsNil)
 
@@ -722,7 +603,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -735,7 +616,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 	// constructing HTTP request to fetch a non-existent object.
 	// expected to fail, error response asserted for expected error values later.
 	objectName := "testObject"
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -750,7 +631,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 	// content for the object to be uploaded.
 	buffer1 := bytes.NewReader([]byte("hello one"))
 	// create HTTP request for the object upload.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -762,7 +643,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// create HTTP request to fetch the object which was uploaded above.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -782,7 +663,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 	// data for new object to be uploaded.
 	buffer2 := bytes.NewReader([]byte("hello two"))
 	objectName = "testObject2"
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer2.Len()), buffer2, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -793,7 +674,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 	// assert the response status code for expected value 200 OK.
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 	// fetch the object which was uploaded above.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -812,7 +693,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 	// data for new object to be uploaded.
 	buffer3 := bytes.NewReader([]byte("hello three"))
 	objectName = "testObject3"
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer3.Len()), buffer3, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -824,7 +705,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// fetch the object which was uploaded above.
-	request, err = newTestSignedRequest("GET", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getPutObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -843,7 +724,7 @@ func (s *TestSuiteCommon) TestMultipleObjects(c *C) {
 func (s *TestSuiteCommon) TestNotImplemented(c *C) {
 	// Generate a random bucket name.
 	bucketName := getRandomBucketName()
-	request, err := newTestSignedRequest("GET", s.endPoint+"/"+bucketName+"/object?policy",
+	request, err := newTestSignedRequestV4("GET", s.endPoint+"/"+bucketName+"/object?policy",
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -858,7 +739,7 @@ func (s *TestSuiteCommon) TestHeader(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// obtain HTTP request to fetch an object from non-existent bucket/object.
-	request, err := newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, "testObject"),
+	request, err := newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, "testObject"),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -882,7 +763,7 @@ func (s *TestSuiteCommon) TestPutBucket(c *C) {
 		go func() {
 			defer wg.Done()
 			// HTTP request to create the bucket.
-			request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+			request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 				0, nil, s.accessKey, s.secretKey)
 			c.Assert(err, IsNil)
 
@@ -899,7 +780,7 @@ func (s *TestSuiteCommon) TestPutBucket(c *C) {
 	bucketName = getRandomBucketName()
 	//Block 2: testing for correctness of the functionality
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -914,13 +795,13 @@ func (s *TestSuiteCommon) TestPutBucket(c *C) {
 // The following is the test flow.
 // 1. Create bucket.
 // 2. Insert Object.
-// 3. Use "X-Amz-Copy-Source" header to copy the previously inserted object.
+// 3. Use "X-Amz-Copy-Source" header to copy the previously created object.
 // 4. Validate the content of copied object.
 func (s *TestSuiteCommon) TestCopyObject(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -930,11 +811,11 @@ func (s *TestSuiteCommon) TestCopyObject(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
-	// content for the object to be inserted.
+	// content for the object to be created.
 	buffer1 := bytes.NewReader([]byte("hello world"))
 	objectName := "testObject"
 	// create HTTP request for object upload.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	request.Header.Set("Content-Type", "application/json")
 	c.Assert(err, IsNil)
@@ -950,7 +831,7 @@ func (s *TestSuiteCommon) TestCopyObject(c *C) {
 	c.Assert(err, IsNil)
 	// setting the "X-Amz-Copy-Source" to allow copying the content of previously uploaded object.
 	request.Header.Set("X-Amz-Copy-Source", url.QueryEscape("/"+bucketName+"/"+objectName))
-	err = signRequest(request, s.accessKey, s.secretKey)
+	err = signRequestV4(request, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request.
 	// the content is expected to have the content of previous disk.
@@ -959,7 +840,7 @@ func (s *TestSuiteCommon) TestCopyObject(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// creating HTTP request to fetch the previously uploaded object.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName2),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName2),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// executing the HTTP request.
@@ -979,7 +860,7 @@ func (s *TestSuiteCommon) TestPutObject(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -993,7 +874,7 @@ func (s *TestSuiteCommon) TestPutObject(c *C) {
 	buffer1 := bytes.NewReader([]byte("hello world"))
 	objectName := "testObject"
 	// creating HTTP request for object upload.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request for object upload.
@@ -1002,7 +883,7 @@ func (s *TestSuiteCommon) TestPutObject(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// fetch the object back and verify its contents.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request to fetch the object.
@@ -1025,7 +906,7 @@ func (s *TestSuiteCommon) TestPutObject(c *C) {
 // Its success verifies the format of the response.
 func (s *TestSuiteCommon) TestListBuckets(c *C) {
 	// create HTTP request for listing buckets.
-	request, err := newTestSignedRequest("GET", getListBucketURL(s.endPoint),
+	request, err := newTestSignedRequestV4("GET", getListBucketURL(s.endPoint),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1048,7 +929,7 @@ func (s *TestSuiteCommon) TestValidateSignature(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1064,7 +945,7 @@ func (s *TestSuiteCommon) TestValidateSignature(c *C) {
 
 	// Create new HTTP request with incorrect secretKey to generate an incorrect signature.
 	secretKey := s.secretKey + "a"
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objName), 0, nil, s.accessKey, secretKey)
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objName), 0, nil, s.accessKey, secretKey)
 	c.Assert(err, IsNil)
 	response, err = client.Do(request)
 	c.Assert(err, IsNil)
@@ -1076,7 +957,7 @@ func (s *TestSuiteCommon) TestSHA256Mismatch(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1091,8 +972,7 @@ func (s *TestSuiteCommon) TestSHA256Mismatch(c *C) {
 	// Body is on purpose set to nil so that we get payload generated for empty bytes.
 
 	// Create new HTTP request with incorrect secretKey to generate an incorrect signature.
-	secretKey := s.secretKey + "a"
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objName), 0, nil, s.accessKey, secretKey)
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objName), 0, nil, s.accessKey, s.secretKey)
 	c.Assert(request.Header.Get("x-amz-content-sha256"), Equals, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
 	// Set the body to generate signature mismatch.
 	request.Body = ioutil.NopCloser(bytes.NewReader([]byte("Hello, World")))
@@ -1109,7 +989,7 @@ func (s *TestSuiteCommon) TestPutObjectLongName(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1123,7 +1003,7 @@ func (s *TestSuiteCommon) TestPutObjectLongName(c *C) {
 	// make long object name.
 	longObjName := fmt.Sprintf("%0255d/%0255d/%0255d", 1, 1, 1)
 	// create new HTTP request to insert the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, longObjName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, longObjName),
 		int64(buffer.Len()), buffer, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request.
@@ -1133,7 +1013,7 @@ func (s *TestSuiteCommon) TestPutObjectLongName(c *C) {
 	// make long object name.
 	longObjName = fmt.Sprintf("%0256d", 1)
 	buffer = bytes.NewReader([]byte("hello world"))
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, longObjName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, longObjName),
 		int64(buffer.Len()), buffer, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1152,7 +1032,7 @@ func (s *TestSuiteCommon) TestNotBeAbleToCreateObjectInNonexistentBucket(c *C) {
 
 	// preparing for upload by generating the upload URL.
 	objectName := "test-object"
-	request, err := newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err := newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1174,7 +1054,7 @@ func (s *TestSuiteCommon) TestHeadOnObjectLastModified(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1189,7 +1069,7 @@ func (s *TestSuiteCommon) TestHeadOnObjectLastModified(c *C) {
 	// content for the object to be uploaded.
 	buffer1 := bytes.NewReader([]byte("hello world"))
 	// obtaining URL for uploading the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1198,7 +1078,7 @@ func (s *TestSuiteCommon) TestHeadOnObjectLastModified(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 	// make HTTP request to obtain object info.
-	request, err = newTestSignedRequest("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request.
@@ -1216,7 +1096,7 @@ func (s *TestSuiteCommon) TestHeadOnObjectLastModified(c *C) {
 	// make HTTP request to obtain object info.
 	// But this time set the "If-Modified-Since" header to be 10 minute more than the actual
 	// last modified time of the object.
-	request, err = newTestSignedRequest("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	request.Header.Set("If-Modified-Since", t.Add(10*time.Minute).UTC().Format(http.TimeFormat))
@@ -1229,7 +1109,7 @@ func (s *TestSuiteCommon) TestHeadOnObjectLastModified(c *C) {
 	// Again, obtain the object info.
 	// This time setting "If-Unmodified-Since" to a time after the object is modified.
 	// As documented above, expecting http.StatusPreconditionFailed.
-	request, err = newTestSignedRequest("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	request.Header.Set("If-Unmodified-Since", t.Add(-10*time.Minute).UTC().Format(http.TimeFormat))
@@ -1244,7 +1124,7 @@ func (s *TestSuiteCommon) TestHeadOnBucket(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getHEADBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getHEADBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1254,7 +1134,7 @@ func (s *TestSuiteCommon) TestHeadOnBucket(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 	// make HEAD request on the bucket.
-	request, err = newTestSignedRequest("HEAD", getHEADBucketURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("HEAD", getHEADBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request.
@@ -1270,7 +1150,7 @@ func (s *TestSuiteCommon) TestContentTypePersists(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1285,7 +1165,7 @@ func (s *TestSuiteCommon) TestContentTypePersists(c *C) {
 	buffer1 := bytes.NewReader([]byte("hello world"))
 	objectName := "test-object.png"
 	// constructing HTTP request for object upload.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	request.Header.Set("Content-Type", "image/png")
@@ -1297,7 +1177,7 @@ func (s *TestSuiteCommon) TestContentTypePersists(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// Fetching the object info using HEAD request for the object which was uploaded above.
-	request, err = newTestSignedRequest("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1308,7 +1188,7 @@ func (s *TestSuiteCommon) TestContentTypePersists(c *C) {
 	c.Assert(response.Header.Get("Content-Type"), Equals, "image/png")
 
 	// Fetching the object itself and then verify the Content-Type header.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1323,7 +1203,7 @@ func (s *TestSuiteCommon) TestContentTypePersists(c *C) {
 	// Uploading a new object with Content-Type  "application/json".
 	objectName = "test-object.json"
 	buffer2 := bytes.NewReader([]byte("hello world"))
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer2.Len()), buffer2, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// setting the request header to be application/json.
@@ -1335,7 +1215,7 @@ func (s *TestSuiteCommon) TestContentTypePersists(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// Obtain the info of the object which was uploaded above using HEAD request.
-	request, err = newTestSignedRequest("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("HEAD", getHeadObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// Execute the HTTP request.
@@ -1345,7 +1225,7 @@ func (s *TestSuiteCommon) TestContentTypePersists(c *C) {
 	c.Assert(response.Header.Get("Content-Type"), Equals, "application/json")
 
 	// Fetch the object and assert whether the Content-Type header persists.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1362,7 +1242,7 @@ func (s *TestSuiteCommon) TestContentTypePersists(c *C) {
 func (s *TestSuiteCommon) TestPartialContent(c *C) {
 	bucketName := getRandomBucketName()
 
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1372,7 +1252,7 @@ func (s *TestSuiteCommon) TestPartialContent(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	buffer1 := bytes.NewReader([]byte("Hello World"))
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, "bar"),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, "bar"),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1382,7 +1262,7 @@ func (s *TestSuiteCommon) TestPartialContent(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// Prepare request
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, "bar"),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, "bar"),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	request.Header.Add("Range", "bytes=6-7")
@@ -1403,7 +1283,7 @@ func (s *TestSuiteCommon) TestListObjectsHandler(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1414,7 +1294,7 @@ func (s *TestSuiteCommon) TestListObjectsHandler(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	buffer1 := bytes.NewReader([]byte("Hello World"))
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, "bar"),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, "bar"),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1424,7 +1304,7 @@ func (s *TestSuiteCommon) TestListObjectsHandler(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// create listObjectsV1 request with valid parameters
-	request, err = newTestSignedRequest("GET", getListObjectsV1URL(s.endPoint, bucketName, "1000"),
+	request, err = newTestSignedRequestV4("GET", getListObjectsV1URL(s.endPoint, bucketName, "1000"),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -1438,7 +1318,7 @@ func (s *TestSuiteCommon) TestListObjectsHandler(c *C) {
 	c.Assert(strings.Contains(string(getContent), "<Key>bar</Key>"), Equals, true)
 
 	// create listObjectsV2 request with valid parameters
-	request, err = newTestSignedRequest("GET", getListObjectsV2URL(s.endPoint, bucketName, "1000", ""),
+	request, err = newTestSignedRequestV4("GET", getListObjectsV2URL(s.endPoint, bucketName, "1000", ""),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -1453,7 +1333,7 @@ func (s *TestSuiteCommon) TestListObjectsHandler(c *C) {
 	c.Assert(strings.Contains(string(getContent), "<Owner><ID></ID><DisplayName></DisplayName></Owner>"), Equals, true)
 
 	// create listObjectsV2 request with valid parameters and fetch-owner activated
-	request, err = newTestSignedRequest("GET", getListObjectsV2URL(s.endPoint, bucketName, "1000", "true"),
+	request, err = newTestSignedRequestV4("GET", getListObjectsV2URL(s.endPoint, bucketName, "1000", "true"),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -1476,7 +1356,7 @@ func (s *TestSuiteCommon) TestListObjectsHandlerErrors(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1487,7 +1367,7 @@ func (s *TestSuiteCommon) TestListObjectsHandlerErrors(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// create listObjectsV1 request with invalid value of max-keys parameter. max-keys is set to -2.
-	request, err = newTestSignedRequest("GET", getListObjectsV1URL(s.endPoint, bucketName, "-2"),
+	request, err = newTestSignedRequestV4("GET", getListObjectsV1URL(s.endPoint, bucketName, "-2"),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -1498,7 +1378,7 @@ func (s *TestSuiteCommon) TestListObjectsHandlerErrors(c *C) {
 	verifyError(c, response, "InvalidArgument", "Argument maxKeys must be an integer between 0 and 2147483647", http.StatusBadRequest)
 
 	// create listObjectsV2 request with invalid value of max-keys parameter. max-keys is set to -2.
-	request, err = newTestSignedRequest("GET", getListObjectsV2URL(s.endPoint, bucketName, "-2", ""),
+	request, err = newTestSignedRequestV4("GET", getListObjectsV2URL(s.endPoint, bucketName, "-2", ""),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	client = http.Client{}
@@ -1517,7 +1397,7 @@ func (s *TestSuiteCommon) TestPutBucketErrors(c *C) {
 	bucketName := getRandomBucketName()
 	// generating a HTTP request to create bucket.
 	// using invalid bucket name.
-	request, err := newTestSignedRequest("PUT", s.endPoint+"/putbucket-.",
+	request, err := newTestSignedRequestV4("PUT", s.endPoint+"/putbucket-.",
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1527,7 +1407,7 @@ func (s *TestSuiteCommon) TestPutBucketErrors(c *C) {
 	// expected to fail with error message "InvalidBucketName".
 	verifyError(c, response, "InvalidBucketName", "The specified bucket is not valid.", http.StatusBadRequest)
 	// HTTP request to create the bucket.
-	request, err = newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1538,7 +1418,7 @@ func (s *TestSuiteCommon) TestPutBucketErrors(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 	// make HTTP request to create the same bucket again.
 	// expected to fail with error message "BucketAlreadyOwnedByYou".
-	request, err = newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1549,7 +1429,7 @@ func (s *TestSuiteCommon) TestPutBucketErrors(c *C) {
 
 	// request for ACL.
 	// Since Minio server doesn't support ACL's the request is expected to fail with  "NotImplemented" error message.
-	request, err = newTestSignedRequest("PUT", s.endPoint+"/"+bucketName+"?acl",
+	request, err = newTestSignedRequestV4("PUT", s.endPoint+"/"+bucketName+"?acl",
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1562,7 +1442,7 @@ func (s *TestSuiteCommon) TestGetObjectLarge10MiB(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// form HTTP reqest to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1592,7 +1472,7 @@ func (s *TestSuiteCommon) TestGetObjectLarge10MiB(c *C) {
 
 	objectName := "test-big-object"
 	// create HTTP request for object upload.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buf.Len()), buf, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1604,7 +1484,7 @@ func (s *TestSuiteCommon) TestGetObjectLarge10MiB(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// prepare HTTP requests to download the object.
-	request, err = newTestSignedRequest("GET", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getPutObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1626,7 +1506,7 @@ func (s *TestSuiteCommon) TestGetObjectLarge11MiB(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1657,7 +1537,7 @@ func (s *TestSuiteCommon) TestGetObjectLarge11MiB(c *C) {
 	// Put object
 	buf := bytes.NewReader(buffer.Bytes())
 	// create HTTP request foe object upload.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buf.Len()), buf, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1668,7 +1548,7 @@ func (s *TestSuiteCommon) TestGetObjectLarge11MiB(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// create HTTP request to download the object.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1695,7 +1575,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectMisAligned(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1727,7 +1607,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectMisAligned(c *C) {
 
 	objectName := "test-big-file"
 	// HTTP request to upload the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buf.Len()), buf, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1757,7 +1637,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectMisAligned(c *C) {
 	}
 	for _, t := range testCases {
 		// HTTP request to download the object.
-		request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+		request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 			0, nil, s.accessKey, s.secretKey)
 		c.Assert(err, IsNil)
 		// Get partial content based on the byte range set.
@@ -1783,7 +1663,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectLarge11MiB(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1815,7 +1695,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectLarge11MiB(c *C) {
 
 	buf := bytes.NewReader([]byte(putContent))
 	// HTTP request to upload the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buf.Len()), buf, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1826,7 +1706,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectLarge11MiB(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// HTTP request to download the object.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// This range spans into first two blocks.
@@ -1851,7 +1731,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectLarge10MiB(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1884,7 +1764,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectLarge10MiB(c *C) {
 
 	objectName := "test-big-10Mb-file"
 	// HTTP request to upload the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buf.Len()), buf, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1896,7 +1776,7 @@ func (s *TestSuiteCommon) TestGetPartialObjectLarge10MiB(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// HTTP request to download the object.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// Get partial content based on the byte range set.
@@ -1922,7 +1802,7 @@ func (s *TestSuiteCommon) TestGetObjectErrors(c *C) {
 	bucketName := getRandomBucketName()
 
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1936,7 +1816,7 @@ func (s *TestSuiteCommon) TestGetObjectErrors(c *C) {
 	// HTTP request to download the object.
 	// Since the specified object doesn't exist in the given bucket,
 	// expected to fail with error message "NoSuchKey"
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1946,7 +1826,7 @@ func (s *TestSuiteCommon) TestGetObjectErrors(c *C) {
 	verifyError(c, response, "NoSuchKey", "The specified key does not exist.", http.StatusNotFound)
 
 	// request to download an object, but an invalid bucket name is set.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, "/getobjecterrors-.", objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, "/getobjecterrors-.", objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1962,7 +1842,7 @@ func (s *TestSuiteCommon) TestGetObjectRangeErrors(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1977,7 +1857,7 @@ func (s *TestSuiteCommon) TestGetObjectRangeErrors(c *C) {
 
 	objectName := "test-object"
 	// HTTP request to upload the object.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -1989,7 +1869,7 @@ func (s *TestSuiteCommon) TestGetObjectRangeErrors(c *C) {
 	c.Assert(response.StatusCode, Equals, http.StatusOK)
 
 	// HTTP request to download the object.
-	request, err = newTestSignedRequest("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("GET", getGetObjectURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	// Invalid byte range set.
 	request.Header.Add("Range", "bytes=-0")
@@ -2008,7 +1888,7 @@ func (s *TestSuiteCommon) TestObjectMultipartAbort(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2028,7 +1908,7 @@ func (s *TestSuiteCommon) TestObjectMultipartAbort(c *C) {
 	// and the case where there is only one upload ID.
 
 	// construct HTTP request to initiate a NewMultipart upload.
-	request, err = newTestSignedRequest("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2046,7 +1926,7 @@ func (s *TestSuiteCommon) TestObjectMultipartAbort(c *C) {
 	c.Assert(len(newResponse.UploadID) > 0, Equals, true)
 
 	// construct HTTP request to initiate a NewMultipart upload.
-	request, err = newTestSignedRequest("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2068,7 +1948,7 @@ func (s *TestSuiteCommon) TestObjectMultipartAbort(c *C) {
 	// content for the part to be uploaded.
 	buffer1 := bytes.NewReader([]byte("hello world"))
 	// HTTP request for the part to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "1"),
+	request, err = newTestSignedRequestV4("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "1"),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request to upload the first part.
@@ -2079,7 +1959,7 @@ func (s *TestSuiteCommon) TestObjectMultipartAbort(c *C) {
 	// content for the second part to be uploaded.
 	buffer2 := bytes.NewReader([]byte("hello world"))
 	// HTTP request for the second part to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "2"),
+	request, err = newTestSignedRequestV4("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "2"),
 		int64(buffer2.Len()), buffer2, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request to upload the second part.
@@ -2087,7 +1967,7 @@ func (s *TestSuiteCommon) TestObjectMultipartAbort(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(response2.StatusCode, Equals, http.StatusOK)
 	// HTTP request for aborting the multipart upload.
-	request, err = newTestSignedRequest("DELETE", getAbortMultipartUploadURL(s.endPoint, bucketName, objectName, uploadID),
+	request, err = newTestSignedRequestV4("DELETE", getAbortMultipartUploadURL(s.endPoint, bucketName, objectName, uploadID),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request to abort the multipart upload.
@@ -2103,7 +1983,7 @@ func (s *TestSuiteCommon) TestBucketMultipartList(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName), 0,
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName), 0,
 		nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2115,7 +1995,7 @@ func (s *TestSuiteCommon) TestBucketMultipartList(c *C) {
 
 	objectName := "test-multipart-object"
 	// construct HTTP request to initiate a NewMultipart upload.
-	request, err = newTestSignedRequest("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request initiating the new multipart upload.
@@ -2137,7 +2017,7 @@ func (s *TestSuiteCommon) TestBucketMultipartList(c *C) {
 	// content for the part to be uploaded.
 	buffer1 := bytes.NewReader([]byte("hello world"))
 	// HTTP request for the part to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "1"),
+	request, err = newTestSignedRequestV4("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "1"),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request to upload the first part.
@@ -2148,7 +2028,7 @@ func (s *TestSuiteCommon) TestBucketMultipartList(c *C) {
 	// content for the second part to be uploaded.
 	buffer2 := bytes.NewReader([]byte("hello world"))
 	// HTTP request for the second part to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "2"),
+	request, err = newTestSignedRequestV4("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "2"),
 		int64(buffer2.Len()), buffer2, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request to upload the second part.
@@ -2157,7 +2037,7 @@ func (s *TestSuiteCommon) TestBucketMultipartList(c *C) {
 	c.Assert(response2.StatusCode, Equals, http.StatusOK)
 
 	// HTTP request to ListMultipart Uploads.
-	request, err = newTestSignedRequest("GET", getListMultipartURL(s.endPoint, bucketName),
+	request, err = newTestSignedRequestV4("GET", getListMultipartURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request.
@@ -2216,7 +2096,7 @@ func (s *TestSuiteCommon) TestValidateObjectMultipartUploadID(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2228,7 +2108,7 @@ func (s *TestSuiteCommon) TestValidateObjectMultipartUploadID(c *C) {
 
 	objectName := "directory1/directory2/object"
 	// construct HTTP request to initiate a NewMultipart upload.
-	request, err = newTestSignedRequest("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request initiating the new multipart upload.
@@ -2252,7 +2132,7 @@ func (s *TestSuiteCommon) TestObjectMultipartListError(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2264,7 +2144,7 @@ func (s *TestSuiteCommon) TestObjectMultipartListError(c *C) {
 
 	objectName := "test-multipart-object"
 	// construct HTTP request to initiate a NewMultipart upload.
-	request, err = newTestSignedRequest("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request initiating the new multipart upload.
@@ -2284,7 +2164,7 @@ func (s *TestSuiteCommon) TestObjectMultipartListError(c *C) {
 	// content for the part to be uploaded.
 	buffer1 := bytes.NewReader([]byte("hello world"))
 	// HTTP request for the part to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "1"),
+	request, err = newTestSignedRequestV4("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "1"),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request to upload the first part.
@@ -2295,7 +2175,7 @@ func (s *TestSuiteCommon) TestObjectMultipartListError(c *C) {
 	// content for the second part to be uploaded.
 	buffer2 := bytes.NewReader([]byte("hello world"))
 	// HTTP request for the second part to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "2"),
+	request, err = newTestSignedRequestV4("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "2"),
 		int64(buffer2.Len()), buffer2, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2306,7 +2186,7 @@ func (s *TestSuiteCommon) TestObjectMultipartListError(c *C) {
 
 	// HTTP request to ListMultipart Uploads.
 	// max-keys is set to valid value of 1
-	request, err = newTestSignedRequest("GET", getListMultipartURLWithParams(s.endPoint, bucketName, objectName, uploadID, "1"),
+	request, err = newTestSignedRequestV4("GET", getListMultipartURLWithParams(s.endPoint, bucketName, objectName, uploadID, "1", "", ""),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request.
@@ -2316,7 +2196,7 @@ func (s *TestSuiteCommon) TestObjectMultipartListError(c *C) {
 
 	// HTTP request to ListMultipart Uploads.
 	// max-keys is set to invalid value of -2.
-	request, err = newTestSignedRequest("GET", getListMultipartURLWithParams(s.endPoint, bucketName, objectName, uploadID, "-2"),
+	request, err = newTestSignedRequestV4("GET", getListMultipartURLWithParams(s.endPoint, bucketName, objectName, uploadID, "-2", "", ""),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// execute the HTTP request.
@@ -2333,7 +2213,7 @@ func (s *TestSuiteCommon) TestObjectValidMD5(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2354,7 +2234,7 @@ func (s *TestSuiteCommon) TestObjectValidMD5(c *C) {
 	buffer1 := bytes.NewReader(data)
 	objectName := "test-1-object"
 	// HTTP request for the object to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// set the Content-Md5 to be the hash to content.
@@ -2367,7 +2247,7 @@ func (s *TestSuiteCommon) TestObjectValidMD5(c *C) {
 	objectName = "test-2-object"
 	buffer1 = bytes.NewReader(data)
 	// HTTP request for the object to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("PUT", getPutObjectURL(s.endPoint, bucketName, objectName),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// set Content-Md5 to invalid value.
@@ -2386,7 +2266,7 @@ func (s *TestSuiteCommon) TestObjectMultipart(c *C) {
 	// generate a random bucket name.
 	bucketName := getRandomBucketName()
 	// HTTP request to create the bucket.
-	request, err := newTestSignedRequest("PUT", getMakeBucketURL(s.endPoint, bucketName),
+	request, err := newTestSignedRequestV4("PUT", getMakeBucketURL(s.endPoint, bucketName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2398,7 +2278,7 @@ func (s *TestSuiteCommon) TestObjectMultipart(c *C) {
 
 	objectName := "test-multipart-object"
 	// construct HTTP request to initiate a NewMultipart upload.
-	request, err = newTestSignedRequest("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
+	request, err = newTestSignedRequestV4("POST", getNewMultipartURL(s.endPoint, bucketName, objectName),
 		0, nil, s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 
@@ -2428,7 +2308,7 @@ func (s *TestSuiteCommon) TestObjectMultipart(c *C) {
 
 	buffer1 := bytes.NewReader(data)
 	// HTTP request for the part to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "1"),
+	request, err = newTestSignedRequestV4("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "1"),
 		int64(buffer1.Len()), buffer1, s.accessKey, s.secretKey)
 	// set the Content-Md5 header to the base64 encoding the md5Sum of the content.
 	request.Header.Set("Content-Md5", base64.StdEncoding.EncodeToString(md5Sum))
@@ -2451,7 +2331,7 @@ func (s *TestSuiteCommon) TestObjectMultipart(c *C) {
 
 	buffer2 := bytes.NewReader(data)
 	// HTTP request for the second part to be uploaded.
-	request, err = newTestSignedRequest("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "2"),
+	request, err = newTestSignedRequestV4("PUT", getPartUploadURL(s.endPoint, bucketName, objectName, uploadID, "2"),
 		int64(buffer2.Len()), buffer2, s.accessKey, s.secretKey)
 	// set the Content-Md5 header to the base64 encoding the md5Sum of the content.
 	request.Header.Set("Content-Md5", base64.StdEncoding.EncodeToString(md5Sum))
@@ -2480,7 +2360,7 @@ func (s *TestSuiteCommon) TestObjectMultipart(c *C) {
 	completeBytes, err := xml.Marshal(completeUploads)
 	c.Assert(err, IsNil)
 	// Indicating that all parts are uploaded and initiating completeMultipartUpload.
-	request, err = newTestSignedRequest("POST", getCompleteMultipartUploadURL(s.endPoint, bucketName, objectName, uploadID),
+	request, err = newTestSignedRequestV4("POST", getCompleteMultipartUploadURL(s.endPoint, bucketName, objectName, uploadID),
 		int64(len(completeBytes)), bytes.NewReader(completeBytes), s.accessKey, s.secretKey)
 	c.Assert(err, IsNil)
 	// Execute the complete multipart request.

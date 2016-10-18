@@ -30,17 +30,21 @@ const jwtAlgorithm = "Bearer"
 // JWT - jwt auth backend
 type JWT struct {
 	credential
+	expiry time.Duration
 }
 
-// Default each token expires in 100yrs.
 const (
-	defaultTokenExpiry time.Duration = time.Hour * 876000 // 100yrs.
+	// Default JWT token for web handlers is one day.
+	defaultJWTExpiry time.Duration = time.Hour * 24
+
+	// Inter-node JWT token expiry is 100 years.
+	defaultInterNodeJWTExpiry time.Duration = time.Hour * 24 * 365 * 100
 )
 
 // newJWT - returns new JWT object.
 func newJWT(expiry time.Duration) (*JWT, error) {
 	if serverConfig == nil {
-		return nil, errors.New("Server not initialzed")
+		return nil, errors.New("Server not initialized")
 	}
 
 	// Save access, secret keys.
@@ -52,7 +56,7 @@ func newJWT(expiry time.Duration) (*JWT, error) {
 		return nil, errors.New("Invalid secret key")
 	}
 
-	return &JWT{cred}, nil
+	return &JWT{cred, expiry}, nil
 }
 
 // GenerateToken - generates a new Json Web Token based on the incoming access key.
@@ -67,12 +71,16 @@ func (jwt *JWT) GenerateToken(accessKey string) (string, error) {
 	tUTCNow := time.Now().UTC()
 	token := jwtgo.NewWithClaims(jwtgo.SigningMethodHS512, jwtgo.MapClaims{
 		// Token expires in 10hrs.
-		"exp": tUTCNow.Add(defaultTokenExpiry).Unix(),
+		"exp": tUTCNow.Add(jwt.expiry).Unix(),
 		"iat": tUTCNow.Unix(),
 		"sub": accessKey,
 	})
 	return token.SignedString([]byte(jwt.SecretAccessKey))
 }
+
+var errInvalidAccessKeyID = errors.New("The access key ID you provided does not exist in our records.")
+
+var errAuthentication = errors.New("Authentication failed, check your access credentials.")
 
 // Authenticate - authenticates incoming access key and secret key.
 func (jwt *JWT) Authenticate(accessKey, secretKey string) error {
@@ -87,13 +95,12 @@ func (jwt *JWT) Authenticate(accessKey, secretKey string) error {
 	}
 
 	if accessKey != jwt.AccessKeyID {
-		return errors.New("Access key does not match")
+		return errInvalidAccessKeyID
 	}
 
 	hashedSecretKey, _ := bcrypt.GenerateFromPassword([]byte(jwt.SecretAccessKey), bcrypt.DefaultCost)
-
 	if bcrypt.CompareHashAndPassword(hashedSecretKey, []byte(secretKey)) != nil {
-		return errors.New("Authentication failed")
+		return errAuthentication
 	}
 
 	// Success.

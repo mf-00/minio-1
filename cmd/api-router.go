@@ -16,7 +16,10 @@
 
 package cmd
 
-import router "github.com/gorilla/mux"
+import (
+	router "github.com/gorilla/mux"
+	"github.com/urfave/negroni"
+)
 
 // objectAPIHandler implements and provides http handlers for S3 API.
 type objectAPIHandlers struct {
@@ -24,9 +27,14 @@ type objectAPIHandlers struct {
 }
 
 // registerAPIRouter - registers S3 compatible APIs.
-func registerAPIRouter(mux *router.Router, api objectAPIHandlers) {
+func registerAPIRouter(mux *router.Router) {
+	// Initialize API.
+	api := objectAPIHandlers{
+		ObjectAPI: newObjectLayerFn,
+	}
+
 	// API Router
-	apiRouter := mux.NewRoute().PathPrefix("/").Subrouter()
+	apiRouter := router.NewRouter().PathPrefix("/").Subrouter()
 
 	// Bucket router
 	bucket := apiRouter.PathPrefix("/{bucket}").Subrouter()
@@ -63,7 +71,7 @@ func registerAPIRouter(mux *router.Router, api objectAPIHandlers) {
 	// GetBucketNotification
 	bucket.Methods("GET").HandlerFunc(api.GetBucketNotificationHandler).Queries("notification", "")
 	// ListenBucketNotification
-	bucket.Methods("GET").HandlerFunc(api.ListenBucketNotificationHandler).Queries("notificationARN", "{notificationARN:.*}")
+	bucket.Methods("GET").HandlerFunc(api.ListenBucketNotificationHandler).Queries("events", "{events:.*}")
 	// ListMultipartUploads
 	bucket.Methods("GET").HandlerFunc(api.ListMultipartUploadsHandler).Queries("uploads", "")
 	// ListObjectsV2
@@ -91,4 +99,12 @@ func registerAPIRouter(mux *router.Router, api objectAPIHandlers) {
 
 	// ListBuckets
 	apiRouter.Methods("GET").HandlerFunc(api.ListBucketsHandler)
+
+	mux.PathPrefix("/").Handler(negroni.New(
+		// Validates all incoming requests to have a valid date header.
+		negroni.Wrap(timeValidityHandler{}),
+		// Route requests
+		negroni.Wrap(apiRouter),
+	))
+
 }

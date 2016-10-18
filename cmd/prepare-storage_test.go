@@ -16,10 +16,7 @@
 
 package cmd
 
-import (
-	"runtime"
-	"testing"
-)
+import "testing"
 
 func (action InitActions) String() string {
 	switch action {
@@ -35,49 +32,16 @@ func (action InitActions) String() string {
 		return "WaitForAll"
 	case WaitForQuorum:
 		return "WaitForQuorum"
+	case WaitForConfig:
+		return "WaitForConfig"
 	case Abort:
 		return "Abort"
 	default:
 		return "Unknown"
 	}
 }
-func TestPrepForInit(t *testing.T) {
-	var disks []string
-	if runtime.GOOS == "windows" {
-		disks = []string{
-			`c:\mnt\disk1`,
-			`c:\mnt\disk2`,
-			`c:\mnt\disk3`,
-			`c:\mnt\disk4`,
-			`c:\mnt\disk5`,
-			`c:\mnt\disk6`,
-			`c:\mnt\disk7`,
-			`c:\mnt\disk8`,
-		}
-	} else {
-		disks = []string{
-			"/mnt/disk1",
-			"/mnt/disk2",
-			"/mnt/disk3",
-			"/mnt/disk4",
-			"/mnt/disk5",
-			"/mnt/disk6",
-			"/mnt/disk7",
-			"/mnt/disk8",
-		}
-	}
-	// Building up disks that resolve to localhost and remote w.r.t isLocalStorage().
-	var (
-		disksLocal  []string
-		disksRemote []string
-	)
-	for i := range disks {
-		disksLocal = append(disksLocal, "localhost:"+disks[i])
-	}
-	// Using 4.4.4.4 as a known non-local address.
-	for i := range disks {
-		disksRemote = append(disksRemote, "4.4.4.4:"+disks[i])
-	}
+
+func TestPrepForInitXL(t *testing.T) {
 	// All disks are unformatted, a fresh setup.
 	allUnformatted := []error{
 		errUnformattedDisk, errUnformattedDisk, errUnformattedDisk, errUnformattedDisk,
@@ -117,35 +81,60 @@ func TestPrepForInit(t *testing.T) {
 		errDiskNotFound, errDiskNotFound, errDiskNotFound, errDiskNotFound,
 		errDiskNotFound, nil, nil, nil,
 	}
+	// Invalid access key id.
+	accessKeyIDErr := []error{
+		errInvalidAccessKeyID, nil, nil, nil,
+		nil, nil, nil, nil,
+	}
+	// Authentication error.
+	authenticationErr := []error{
+		nil, nil, nil, nil,
+		errAuthentication, nil, nil, nil,
+	}
+	// Server version mismatch.
+	serverVersionMismatch := []error{
+		errServerVersionMismatch, nil, nil, nil,
+		errServerVersionMismatch, nil, nil, nil,
+	}
+	// Server time mismatch.
+	serverTimeMismatch := []error{
+		nil, nil, nil, nil,
+		errServerTimeMismatch, nil, nil, nil,
+	}
 
 	testCases := []struct {
 		// Params for prepForInit().
-		disks     []string
+		firstDisk bool
 		errs      []error
 		diskCount int
 		action    InitActions
 	}{
 		// Local disks.
-		{disksLocal, allFormatted, 8, InitObjectLayer},
-		{disksLocal, quorumFormatted, 8, InitObjectLayer},
-		{disksLocal, allUnformatted, 8, FormatDisks},
-		{disksLocal, quorumUnformatted, 8, WaitForAll},
-		{disksLocal, quorumUnformattedSomeCorrupted, 8, WaitForHeal},
-		{disksLocal, noQuourm, 8, WaitForQuorum},
-		{disksLocal, minorityCorrupted, 8, WaitForHeal},
-		{disksLocal, majorityCorrupted, 8, Abort},
+		{true, allFormatted, 8, InitObjectLayer},
+		{true, quorumFormatted, 8, InitObjectLayer},
+		{true, allUnformatted, 8, FormatDisks},
+		{true, quorumUnformatted, 8, WaitForAll},
+		{true, quorumUnformattedSomeCorrupted, 8, Abort},
+		{true, noQuourm, 8, WaitForQuorum},
+		{true, minorityCorrupted, 8, WaitForHeal},
+		{true, majorityCorrupted, 8, Abort},
 		// Remote disks.
-		{disksRemote, allFormatted, 8, InitObjectLayer},
-		{disksRemote, quorumFormatted, 8, InitObjectLayer},
-		{disksRemote, allUnformatted, 8, WaitForFormatting},
-		{disksRemote, quorumUnformatted, 8, WaitForAll},
-		{disksRemote, quorumUnformattedSomeCorrupted, 8, WaitForHeal},
-		{disksRemote, noQuourm, 8, WaitForQuorum},
-		{disksRemote, minorityCorrupted, 8, WaitForHeal},
-		{disksRemote, majorityCorrupted, 8, Abort},
+		{false, allFormatted, 8, InitObjectLayer},
+		{false, quorumFormatted, 8, InitObjectLayer},
+		{false, allUnformatted, 8, WaitForFormatting},
+		{false, quorumUnformatted, 8, WaitForAll},
+		{false, quorumUnformattedSomeCorrupted, 8, Abort},
+		{false, noQuourm, 8, WaitForQuorum},
+		{false, minorityCorrupted, 8, WaitForHeal},
+		{false, majorityCorrupted, 8, Abort},
+		// Config mistakes.
+		{true, accessKeyIDErr, 8, WaitForConfig},
+		{true, authenticationErr, 8, WaitForConfig},
+		{true, serverVersionMismatch, 8, WaitForConfig},
+		{true, serverTimeMismatch, 8, WaitForConfig},
 	}
 	for i, test := range testCases {
-		actual := prepForInit(test.disks, test.errs, test.diskCount)
+		actual := prepForInitXL(test.firstDisk, test.errs, test.diskCount)
 		if actual != test.action {
 			t.Errorf("Test %d expected %s but receieved %s\n", i+1, test.action, actual)
 		}

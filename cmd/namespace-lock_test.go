@@ -298,16 +298,8 @@ func TestLockStats(t *testing.T) {
 		},
 	}
 	var wg sync.WaitGroup
-	// enabling lock instrumentation.
-	globalDebugLock = true
 	// initializing the locks.
 	initNSLock(false)
-
-	// set debug lock info  to `nil` so that the next tests have to initialize them again.
-	defer func() {
-		globalDebugLock = false
-		nsMutex.debugLockMap = nil
-	}()
 
 	// hold 10 read locks.
 	for i := 0; i < 10; i++ {

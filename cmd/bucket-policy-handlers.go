@@ -132,19 +132,15 @@ func (api objectAPIHandlers) PutBucketPolicyHandler(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// PutBucketPolicy does not support bucket policies, use checkAuth to validate signature.
+	if s3Error := checkAuth(r); s3Error != ErrNone {
+		errorIf(errSignatureMismatch, dumpRequest(r))
+		writeErrorResponse(w, r, s3Error, r.URL.Path)
+		return
+	}
+
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
-	switch getRequestAuthType(r) {
-	default:
-		// For all unknown auth types return error.
-		writeErrorResponse(w, r, ErrAccessDenied, r.URL.Path)
-		return
-	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
-			writeErrorResponse(w, r, s3Error, r.URL.Path)
-			return
-		}
-	}
 
 	// If Content-Length is unknown or zero, deny the
 	// request. PutBucketPolicy always needs a Content-Length if
@@ -186,7 +182,7 @@ func (api objectAPIHandlers) PutBucketPolicyHandler(w http.ResponseWriter, r *ht
 	}
 
 	// Save bucket policy.
-	if err = writeBucketPolicy(bucket, objAPI, bytes.NewReader(policyBytes), int64(len(policyBytes))); err != nil {
+	if err = persistAndNotifyBucketPolicyChange(bucket, policyChange{false, policy}, objAPI); err != nil {
 		switch err.(type) {
 		case BucketNameInvalid:
 			writeErrorResponse(w, r, ErrInvalidBucketName, r.URL.Path)
@@ -200,6 +196,34 @@ func (api objectAPIHandlers) PutBucketPolicyHandler(w http.ResponseWriter, r *ht
 	writeSuccessNoContent(w)
 }
 
+// persistAndNotifyBucketPolicyChange - takes a policyChange argument,
+// persists it to storage, and notify nodes in the cluster about the
+// change. In-memory state is updated in response to the notification.
+func persistAndNotifyBucketPolicyChange(bucket string, pCh policyChange, objAPI ObjectLayer) error {
+	// FIXME: Race exists between the bucket existence check and
+	// then updating the bucket policy.
+	if err := isBucketExist(bucket, objAPI); err != nil {
+		return err
+	}
+
+	if pCh.IsRemove {
+		if err := removeBucketPolicy(bucket, objAPI); err != nil {
+			return err
+		}
+	} else {
+		if pCh.BktPolicy == nil {
+			return errInvalidArgument
+		}
+		if err := writeBucketPolicy(bucket, objAPI, pCh.BktPolicy); err != nil {
+			return err
+		}
+	}
+
+	// Notify all peers (including self) to update in-memory state
+	S3PeersUpdateBucketPolicy(bucket, pCh)
+	return nil
+}
+
 // DeleteBucketPolicyHandler - DELETE Bucket policy
 // -----------------
 // This implementation of the DELETE operation uses the policy
@@ -211,23 +235,19 @@ func (api objectAPIHandlers) DeleteBucketPolicyHandler(w http.ResponseWriter, r 
 		return
 	}
 
+	// DeleteBucketPolicy does not support bucket policies, use checkAuth to validate signature.
+	if s3Error := checkAuth(r); s3Error != ErrNone {
+		errorIf(errSignatureMismatch, dumpRequest(r))
+		writeErrorResponse(w, r, s3Error, r.URL.Path)
+		return
+	}
+
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
 
-	switch getRequestAuthType(r) {
-	default:
-		// For all unknown auth types return error.
-		writeErrorResponse(w, r, ErrAccessDenied, r.URL.Path)
-		return
-	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
-			writeErrorResponse(w, r, s3Error, r.URL.Path)
-			return
-		}
-	}
-
-	// Delete bucket access policy.
-	if err := removeBucketPolicy(bucket, objAPI); err != nil {
+	// Delete bucket access policy, by passing an empty policy
+	// struct.
+	if err := persistAndNotifyBucketPolicyChange(bucket, policyChange{true, nil}, objAPI); err != nil {
 		switch err.(type) {
 		case BucketNameInvalid:
 			writeErrorResponse(w, r, ErrInvalidBucketName, r.URL.Path)
@@ -254,20 +274,15 @@ func (api objectAPIHandlers) GetBucketPolicyHandler(w http.ResponseWriter, r *ht
 		return
 	}
 
+	// GetBucketPolicy does not support bucket policies, use checkAuth to validate signature.
+	if s3Error := checkAuth(r); s3Error != ErrNone {
+		errorIf(errSignatureMismatch, dumpRequest(r))
+		writeErrorResponse(w, r, s3Error, r.URL.Path)
+		return
+	}
+
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
-
-	switch getRequestAuthType(r) {
-	default:
-		// For all unknown auth types return error.
-		writeErrorResponse(w, r, ErrAccessDenied, r.URL.Path)
-		return
-	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
-			writeErrorResponse(w, r, s3Error, r.URL.Path)
-			return
-		}
-	}
 
 	// Read bucket access policy.
 	policy, err := readBucketPolicy(bucket, objAPI)

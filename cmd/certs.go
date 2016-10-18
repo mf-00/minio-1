@@ -17,6 +17,10 @@
 package cmd
 
 import (
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 )
@@ -86,4 +90,45 @@ func isSSL() bool {
 		return true
 	}
 	return false
+}
+
+// Reads certificated file and returns a list of parsed certificates.
+func readCertificateChain() ([]*x509.Certificate, error) {
+	file, err := os.Open(mustGetCertFile())
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	// Read the cert successfully.
+	bytes, err := ioutil.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+
+	// Proceed to parse the certificates.
+	return parseCertificateChain(bytes)
+}
+
+// Parses certificate chain, returns a list of parsed certificates.
+func parseCertificateChain(bytes []byte) ([]*x509.Certificate, error) {
+	var certs []*x509.Certificate
+	var block *pem.Block
+	current := bytes
+
+	// Parse all certs in the chain.
+	for len(current) > 0 {
+		block, current = pem.Decode(current)
+		if block == nil {
+			return nil, errors.New("Could not PEM block")
+		}
+		// Parse the decoded certificate.
+		cert, err := x509.ParseCertificate(block.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		certs = append(certs, cert)
+
+	}
+	return certs, nil
 }

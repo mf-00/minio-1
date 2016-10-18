@@ -18,7 +18,9 @@ package cmd
 
 import (
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
+	"hash"
 	"io"
 	"path"
 	"strings"
@@ -57,8 +59,7 @@ func (xl xlObjects) GetObject(bucket, object string, startOffset int64, length i
 		return traceError(errUnexpected)
 	}
 
-	// generates random string on setting MINIO_DEBUG=lock, else returns empty string.
-	// used for instrumentation on locks.
+	// get a random ID for lock instrumentation.
 	opsID := getOpsID()
 
 	// Lock the object before reading.
@@ -217,138 +218,6 @@ func (xl xlObjects) GetObject(bucket, object string, startOffset int64, length i
 	return nil
 }
 
-// HealObject - heal the object.
-// FIXME: If an object object was deleted and one disk was down, and later the disk comes back
-// up again, heal on the object should delete it.
-func (xl xlObjects) HealObject(bucket, object string) error {
-	// Verify if bucket is valid.
-	if !IsValidBucketName(bucket) {
-		return traceError(BucketNameInvalid{Bucket: bucket})
-	}
-	// Verify if object is valid.
-	if !IsValidObjectName(object) {
-		// FIXME: return Invalid prefix.
-		return traceError(ObjectNameInvalid{Bucket: bucket, Object: object})
-	}
-
-	// generates random string on setting MINIO_DEBUG=lock, else returns empty string.
-	// used for instrumentation on locks.
-	opsID := getOpsID()
-
-	// Lock the object before healing.
-	nsMutex.RLock(bucket, object, opsID)
-	defer nsMutex.RUnlock(bucket, object, opsID)
-
-	partsMetadata, errs := readAllXLMetadata(xl.storageDisks, bucket, object)
-	if err := reduceErrs(errs, nil); err != nil {
-		return toObjectErr(err, bucket, object)
-	}
-
-	if !xlShouldHeal(partsMetadata, errs) {
-		// There is nothing to heal.
-		return nil
-	}
-
-	// List of disks having latest version of the object.
-	latestDisks, modTime := listOnlineDisks(xl.storageDisks, partsMetadata, errs)
-	// List of disks having outdated version of the object or missing object.
-	outDatedDisks := outDatedDisks(xl.storageDisks, partsMetadata, errs)
-	// Latest xlMetaV1 for reference.
-	latestMeta := pickValidXLMeta(partsMetadata, modTime)
-
-	for index, disk := range outDatedDisks {
-		// Before healing outdated disks, we need to remove xl.json
-		// and part files from "bucket/object/" so that
-		// rename(".minio.sys", "tmp/tmpuuid/", "bucket", "object/") succeeds.
-		if disk == nil {
-			// Not an outdated disk.
-			continue
-		}
-		if errs[index] != nil {
-			// If there was an error (most likely errFileNotFound)
-			continue
-		}
-		// Outdated object with the same name exists that needs to be deleted.
-		outDatedMeta := partsMetadata[index]
-		// Delete all the parts.
-		for partIndex := 0; partIndex < len(outDatedMeta.Parts); partIndex++ {
-			err := disk.DeleteFile(bucket,
-				pathJoin(object, outDatedMeta.Parts[partIndex].Name))
-			if err != nil {
-				return traceError(err)
-			}
-		}
-		// Delete xl.json file.
-		err := disk.DeleteFile(bucket, pathJoin(object, xlMetaJSONFile))
-		if err != nil {
-			return traceError(err)
-		}
-	}
-
-	// Reorder so that we have data disks first and parity disks next.
-	latestDisks = getOrderedDisks(latestMeta.Erasure.Distribution, latestDisks)
-	outDatedDisks = getOrderedDisks(latestMeta.Erasure.Distribution, outDatedDisks)
-	partsMetadata = getOrderedPartsMetadata(latestMeta.Erasure.Distribution, partsMetadata)
-
-	// We write at temporary location and then rename to fianal location.
-	tmpID := getUUID()
-
-	// Checksum of the part files. checkSumInfos[index] will contain checksums of all the part files
-	// in the outDatedDisks[index]
-	checkSumInfos := make([][]checkSumInfo, len(outDatedDisks))
-
-	// Heal each part. erasureHealFile() will write the healed part to
-	// .minio/tmp/uuid/ which needs to be renamed later to the final location.
-	for partIndex := 0; partIndex < len(latestMeta.Parts); partIndex++ {
-		partName := latestMeta.Parts[partIndex].Name
-		partSize := latestMeta.Parts[partIndex].Size
-		erasure := latestMeta.Erasure
-		sumInfo, err := latestMeta.Erasure.GetCheckSumInfo(partName)
-		if err != nil {
-			return err
-		}
-		// Heal the part file.
-		checkSums, err := erasureHealFile(latestDisks, outDatedDisks,
-			bucket, pathJoin(object, partName),
-			minioMetaBucket, pathJoin(tmpMetaPrefix, tmpID, partName),
-			partSize, erasure.BlockSize, erasure.DataBlocks, erasure.ParityBlocks, sumInfo.Algorithm)
-		if err != nil {
-			return err
-		}
-		for index, sum := range checkSums {
-			if outDatedDisks[index] == nil {
-				continue
-			}
-			checkSumInfos[index] = append(checkSumInfos[index], checkSumInfo{partName, sumInfo.Algorithm, sum})
-		}
-	}
-
-	// xl.json should be written to all the healed disks.
-	for index, disk := range outDatedDisks {
-		if disk == nil {
-			continue
-		}
-		partsMetadata[index] = latestMeta
-		partsMetadata[index].Erasure.Checksum = checkSumInfos[index]
-	}
-	err := writeUniqueXLMetadata(outDatedDisks, minioMetaBucket, pathJoin(tmpMetaPrefix, tmpID), partsMetadata, diskCount(outDatedDisks))
-	if err != nil {
-		return toObjectErr(err, bucket, object)
-	}
-
-	// Rename from tmp location to the actual location.
-	for _, disk := range outDatedDisks {
-		if disk == nil {
-			continue
-		}
-		err := disk.RenameFile(minioMetaBucket, retainSlash(pathJoin(tmpMetaPrefix, tmpID)), bucket, retainSlash(object))
-		if err != nil {
-			return traceError(err)
-		}
-	}
-	return nil
-}
-
 // GetObjectInfo - reads object metadata and replies back ObjectInfo.
 func (xl xlObjects) GetObjectInfo(bucket, object string) (ObjectInfo, error) {
 	// Verify if bucket is valid.
@@ -360,8 +229,7 @@ func (xl xlObjects) GetObjectInfo(bucket, object string) (ObjectInfo, error) {
 		return ObjectInfo{}, ObjectNameInvalid{Bucket: bucket, Object: object}
 	}
 
-	// generates random string on setting MINIO_DEBUG=lock, else returns empty string.
-	// used for instrumentation on locks.
+	// get a random ID for lock instrumentation.
 	opsID := getOpsID()
 
 	nsMutex.RLock(bucket, object, opsID)
@@ -391,8 +259,14 @@ func (xl xlObjects) getObjectInfo(bucket, object string) (objInfo ObjectInfo, er
 		MD5Sum:          xlMetaMap["md5Sum"],
 		ContentType:     xlMetaMap["content-type"],
 		ContentEncoding: xlMetaMap["content-encoding"],
-		UserDefined:     xlMetaMap,
 	}
+
+	// md5Sum has already been extracted into objInfo.MD5Sum.  We
+	// need to remove it from xlMetaMap to avoid it from appearing as
+	// part of response headers. e.g, X-Minio-* or X-Amz-*.
+
+	delete(xlMetaMap, "md5Sum")
+	objInfo.UserDefined = xlMetaMap
 	return objInfo, nil
 }
 
@@ -493,7 +367,7 @@ func renameObject(disks []StorageAPI, srcBucket, srcObject, dstBucket, dstObject
 // until EOF, erasure codes the data across all disk and additionally
 // writes `xl.json` which carries the necessary metadata for future
 // object operations.
-func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.Reader, metadata map[string]string) (objInfo ObjectInfo, err error) {
+func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.Reader, metadata map[string]string, sha256sum string) (objInfo ObjectInfo, err error) {
 	// Verify if bucket is valid.
 	if !IsValidBucketName(bucket) {
 		return ObjectInfo{}, traceError(BucketNameInvalid{Bucket: bucket})
@@ -518,9 +392,16 @@ func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.
 	minioMetaTmpBucket := path.Join(minioMetaBucket, tmpMetaPrefix)
 	tempObj := uniqueID
 
-	var mw io.Writer
 	// Initialize md5 writer.
 	md5Writer := md5.New()
+
+	writers := []io.Writer{md5Writer}
+
+	var sha256Writer hash.Hash
+	if sha256sum != "" {
+		sha256Writer = sha256.New()
+		writers = append(writers, sha256Writer)
+	}
 
 	// Proceed to set the cache.
 	var newBuffer io.WriteCloser
@@ -534,16 +415,16 @@ func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.
 		newBuffer, err = xl.objCache.Create(path.Join(bucket, object), size)
 		if err == nil {
 			// Create a multi writer to write to both memory and client response.
-			mw = io.MultiWriter(newBuffer, md5Writer)
+			writers = append(writers, newBuffer)
 		}
 		// Ignore error if cache is full, proceed to write the object.
 		if err != nil && err != objcache.ErrCacheFull {
 			// For any other error return here.
 			return ObjectInfo{}, toObjectErr(traceError(err), bucket, object)
 		}
-	} else {
-		mw = md5Writer
 	}
+
+	mw := io.MultiWriter(writers...)
 
 	// Limit the reader to its provided size if specified.
 	var limitDataReader io.Reader
@@ -603,16 +484,6 @@ func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.
 		}
 	}
 
-	// Validate if payload is valid.
-	if isSignVerify(data) {
-		if vErr := data.(*signVerifyReader).Verify(); vErr != nil {
-			// Incoming payload wrong, delete the temporary object.
-			xl.deleteObject(minioMetaTmpBucket, tempObj)
-			// Error return.
-			return ObjectInfo{}, toObjectErr(traceError(vErr), bucket, object)
-		}
-	}
-
 	// md5Hex representation.
 	md5Hex := metadata["md5Sum"]
 	if md5Hex != "" {
@@ -624,6 +495,16 @@ func (xl xlObjects) PutObject(bucket string, object string, size int64, data io.
 		}
 	}
 
+	if sha256sum != "" {
+		newSHA256sum := hex.EncodeToString(sha256Writer.Sum(nil))
+		if newSHA256sum != sha256sum {
+			// SHA256 mismatch, delete the temporary object.
+			xl.deleteObject(minioMetaBucket, tempObj)
+			return ObjectInfo{}, traceError(SHA256Mismatch{})
+		}
+	}
+
+	// get a random ID for lock instrumentation.
 	// generates random string on setting MINIO_DEBUG=lock, else returns empty string.
 	// used for instrumentation on locks.
 	opsID := getOpsID()
@@ -754,8 +635,7 @@ func (xl xlObjects) DeleteObject(bucket, object string) (err error) {
 		return traceError(ObjectNameInvalid{Bucket: bucket, Object: object})
 	}
 
-	// generates random string on setting MINIO_DEBUG=lock, else returns empty string.
-	// used for instrumentation on locks.
+	// get a random ID for lock instrumentation.
 	opsID := getOpsID()
 
 	nsMutex.Lock(bucket, object, opsID)

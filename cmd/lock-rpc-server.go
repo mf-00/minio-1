@@ -26,6 +26,7 @@ import (
 	"time"
 
 	router "github.com/gorilla/mux"
+	"github.com/minio/minio-go/pkg/set"
 )
 
 const lockRPCPath = "/minio/lock"
@@ -73,14 +74,12 @@ type lockServer struct {
 	rpcPath string
 	mutex   sync.Mutex
 	lockMap map[string][]lockRequesterInfo
-	// Timestamp set at the time of initialization. Resets naturally on minio server restart.
-	timestamp time.Time
 }
 
-// Initialize distributed name space lock.
-func initDistributedNSLock(mux *router.Router, serverConfig serverCmdConfig) {
+// Register distributed NS lock handlers.
+func registerDistNSLockRouter(mux *router.Router, serverConfig serverCmdConfig) error {
 	lockServers := newLockServers(serverConfig)
-	registerStorageLockers(mux, lockServers)
+	return registerStorageLockers(mux, lockServers)
 }
 
 // Create one lock server for every local storage rpc server.
@@ -90,12 +89,14 @@ func newLockServers(serverConfig serverCmdConfig) (lockServers []*lockServer) {
 	ignoredExports := serverConfig.ignoredDisks
 
 	// Save ignored disks in a map
-	skipDisks := make(map[string]bool)
-	for _, ignoredExport := range ignoredExports {
-		skipDisks[ignoredExport] = true
+	// Initialize ignored disks in a new set.
+	ignoredSet := set.NewStringSet()
+	if len(ignoredExports) > 0 {
+		ignoredSet = set.CreateStringSet(ignoredExports...)
 	}
 	for _, export := range exports {
-		if skipDisks[export] {
+		if ignoredSet.Contains(export) {
+			// Ignore initializing ignored export.
 			continue
 		}
 		// Not local storage move to the next node.
@@ -107,10 +108,9 @@ func newLockServers(serverConfig serverCmdConfig) (lockServers []*lockServer) {
 		}
 		// Create handler for lock RPCs
 		locker := &lockServer{
-			rpcPath:   export,
-			mutex:     sync.Mutex{},
-			lockMap:   make(map[string][]lockRequesterInfo),
-			timestamp: time.Now().UTC(),
+			rpcPath: export,
+			mutex:   sync.Mutex{},
+			lockMap: make(map[string][]lockRequesterInfo),
 		}
 
 		// Start loop for stale lock maintenance
@@ -128,20 +128,24 @@ func newLockServers(serverConfig serverCmdConfig) (lockServers []*lockServer) {
 }
 
 // registerStorageLockers - register locker rpc handlers for net/rpc library clients
-func registerStorageLockers(mux *router.Router, lockServers []*lockServer) {
+func registerStorageLockers(mux *router.Router, lockServers []*lockServer) error {
 	for _, lockServer := range lockServers {
 		lockRPCServer := rpc.NewServer()
-		lockRPCServer.RegisterName("Dsync", lockServer)
+		err := lockRPCServer.RegisterName("Dsync", lockServer)
+		if err != nil {
+			return traceError(err)
+		}
 		lockRouter := mux.PathPrefix(reservedBucket).Subrouter()
 		lockRouter.Path(path.Join("/lock", lockServer.rpcPath)).Handler(lockRPCServer)
 	}
+	return nil
 }
 
 ///  Distributed lock handlers
 
 // LoginHandler - handles LoginHandler RPC call.
 func (l *lockServer) LoginHandler(args *RPCLoginArgs, reply *RPCLoginReply) error {
-	jwt, err := newJWT(defaultTokenExpiry)
+	jwt, err := newJWT(defaultInterNodeJWTExpiry)
 	if err != nil {
 		return err
 	}
@@ -153,7 +157,7 @@ func (l *lockServer) LoginHandler(args *RPCLoginArgs, reply *RPCLoginReply) erro
 		return err
 	}
 	reply.Token = token
-	reply.Timestamp = l.timestamp
+	reply.Timestamp = time.Now().UTC()
 	reply.ServerVersion = Version
 	return nil
 }
@@ -248,6 +252,23 @@ func (l *lockServer) RUnlock(args *LockArgs, reply *bool) error {
 	return nil
 }
 
+// ForceUnlock - rpc handler for force unlock operation.
+func (l *lockServer) ForceUnlock(args *LockArgs, reply *bool) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	if err := l.validateLockArgs(args); err != nil {
+		return err
+	}
+	if len(args.UID) != 0 {
+		return fmt.Errorf("ForceUnlock called with non-empty UID: %s", args.UID)
+	}
+	if _, ok := l.lockMap[args.Name]; ok { // Only clear lock when set
+		delete(l.lockMap, args.Name) // Remove the lock (irrespective of write or read lock)
+	}
+	*reply = true
+	return nil
+}
+
 // Expired - rpc handler for expired lock status.
 func (l *lockServer) Expired(args *LockArgs, reply *bool) error {
 	l.mutex.Lock()
@@ -294,7 +315,7 @@ func (l *lockServer) lockMaintenance(interval time.Duration) {
 	// Validate if long lived locks are indeed clean.
 	for _, nlrip := range nlripLongLived {
 		// Initialize client based on the long live locks.
-		c := newClient(nlrip.lri.node, nlrip.lri.rpcPath)
+		c := newClient(nlrip.lri.node, nlrip.lri.rpcPath, isSSL())
 
 		var expired bool
 

@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"net/http"
+	"os"
 	"path"
 	"regexp"
 	"strings"
@@ -76,19 +77,27 @@ func setBrowserRedirectHandler(h http.Handler) http.Handler {
 }
 
 func (h redirectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Re-direction handled specifically for browsers.
-	if strings.Contains(r.Header.Get("User-Agent"), "Mozilla") && !isRequestSignatureV4(r) {
-		// '/' is redirected to 'locationPrefix/'
-		// '/webrpc' is redirected to 'locationPrefix/webrpc'
-		// '/login' is redirected to 'locationPrefix/login'
-		switch r.URL.Path {
-		case "/", "/webrpc", "/login", "/favicon.ico":
-			location := h.locationPrefix + r.URL.Path
-			// Redirect to new location.
-			http.Redirect(w, r, location, http.StatusTemporaryRedirect)
-			return
+	if !strings.EqualFold(os.Getenv("MINIO_BROWSER"), "off") {
+		// Re-direction handled specifically for browsers.
+		if strings.Contains(r.Header.Get("User-Agent"), "Mozilla") && !isRequestSignatureV4(r) {
+			switch r.URL.Path {
+			case "/", "/webrpc", "/login", "/favicon.ico":
+				// '/' is redirected to 'locationPrefix/'
+				// '/webrpc' is redirected to 'locationPrefix/webrpc'
+				// '/login' is redirected to 'locationPrefix/login'
+				location := h.locationPrefix + r.URL.Path
+				// Redirect to new location.
+				http.Redirect(w, r, location, http.StatusTemporaryRedirect)
+				return
+			case h.locationPrefix:
+				// locationPrefix is redirected to 'locationPrefix/'
+				location := h.locationPrefix + "/"
+				http.Redirect(w, r, location, http.StatusTemporaryRedirect)
+				return
+			}
 		}
 	}
+
 	h.handler.ServeHTTP(w, r)
 }
 
@@ -178,16 +187,10 @@ func parseAmzDateHeader(req *http.Request) (time.Time, APIErrorCode) {
 	return time.Time{}, ErrMissingDateHeader
 }
 
-type timeHandler struct {
-	handler http.Handler
+type timeValidityHandler struct {
 }
 
-// setTimeValidityHandler to validate parsable time over http header
-func setTimeValidityHandler(h http.Handler) http.Handler {
-	return timeHandler{h}
-}
-
-func (h timeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h timeValidityHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Verify if date headers are set, if not reject the request
 	if _, ok := r.Header["Authorization"]; ok {
 		amzDate, apiErr := parseAmzDateHeader(r)
@@ -198,15 +201,14 @@ func (h timeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeErrorResponse(w, r, apiErr, r.URL.Path)
 			return
 		}
-		// Verify if the request date header is shifted by less than maxSkewTime parameter in the past
+		// Verify if the request date header is shifted by less than globalMaxSkewTime parameter in the past
 		// or in the future, reject request otherwise.
 		curTime := time.Now().UTC()
-		if curTime.Sub(amzDate) > maxSkewTime || amzDate.Sub(curTime) > maxSkewTime {
+		if curTime.Sub(amzDate) > globalMaxSkewTime || amzDate.Sub(curTime) > globalMaxSkewTime {
 			writeErrorResponse(w, r, ErrRequestTimeTooSkewed, r.URL.Path)
 			return
 		}
 	}
-	h.handler.ServeHTTP(w, r)
 }
 
 type resourceHandler struct {

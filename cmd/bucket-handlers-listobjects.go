@@ -81,8 +81,15 @@ func (api objectAPIHandlers) ListObjectsV2Handler(w http.ResponseWriter, r *http
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypeSigned, authTypePresigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -148,8 +155,15 @@ func (api objectAPIHandlers) ListObjectsV1Handler(w http.ResponseWriter, r *http
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypeSigned, authTypePresigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return

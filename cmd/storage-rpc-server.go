@@ -26,6 +26,7 @@ import (
 
 	router "github.com/gorilla/mux"
 	"github.com/mf-00/newgo/pkg/disk"
+	"github.com/minio/minio-go/pkg/set"
 )
 
 // Storage server implements rpc primitives to facilitate exporting a
@@ -40,7 +41,7 @@ type storageServer struct {
 
 // Login - login handler.
 func (s *storageServer) LoginHandler(args *RPCLoginArgs, reply *RPCLoginReply) error {
-	jwt, err := newJWT(defaultTokenExpiry)
+	jwt, err := newJWT(defaultInterNodeJWTExpiry)
 	if err != nil {
 		return err
 	}
@@ -52,7 +53,7 @@ func (s *storageServer) LoginHandler(args *RPCLoginArgs, reply *RPCLoginReply) e
 		return err
 	}
 	reply.Token = token
-	reply.Timestamp = s.timestamp
+	reply.Timestamp = time.Now().UTC()
 	reply.ServerVersion = Version
 	return nil
 }
@@ -205,20 +206,32 @@ func (s *storageServer) RenameFileHandler(args *RenameFileArgs, reply *GenericRe
 	return s.storage.RenameFile(args.SrcVol, args.SrcPath, args.DstVol, args.DstPath)
 }
 
+// TryInitHandler - wake up storage server.
+func (s *storageServer) TryInitHandler(args *GenericArgs, reply *GenericReply) error {
+	if !isRPCTokenValid(args.Token) {
+		return errInvalidToken
+	}
+	go func() {
+		globalWakeupCh <- struct{}{}
+	}()
+	*reply = GenericReply{}
+	return nil
+}
+
 // Initialize new storage rpc.
 func newRPCServer(serverConfig serverCmdConfig) (servers []*storageServer, err error) {
 	// Initialize posix storage API.
 	exports := serverConfig.disks
 	ignoredExports := serverConfig.ignoredDisks
 
-	// Save ignored disks in a map
-	skipDisks := make(map[string]bool)
-	for _, ignoredExport := range ignoredExports {
-		skipDisks[ignoredExport] = true
+	// Initialize ignored disks in a new set.
+	ignoredSet := set.NewStringSet()
+	if len(ignoredExports) > 0 {
+		ignoredSet = set.CreateStringSet(ignoredExports...)
 	}
-	t := time.Now().UTC()
 	for _, export := range exports {
-		if skipDisks[export] {
+		if ignoredSet.Contains(export) {
+			// Ignore initializing ignored export.
 			continue
 		}
 		// e.g server:/mnt/disk1
@@ -235,23 +248,32 @@ func newRPCServer(serverConfig serverCmdConfig) (servers []*storageServer, err e
 				export = export[idx+1:]
 			}
 			servers = append(servers, &storageServer{
-				storage:   storage,
-				path:      export,
-				timestamp: t,
+				storage: storage,
+				path:    export,
 			})
 		}
 	}
-	return servers, err
+	return servers, nil
 }
 
 // registerStorageRPCRouter - register storage rpc router.
-func registerStorageRPCRouters(mux *router.Router, stServers []*storageServer) {
+func registerStorageRPCRouters(mux *router.Router, srvCmdConfig serverCmdConfig) error {
+	// Initialize storage rpc servers for every disk that is hosted on this node.
+	storageRPCs, err := newRPCServer(srvCmdConfig)
+	if err != nil {
+		return traceError(err)
+	}
+
 	// Create a unique route for each disk exported from this node.
-	for _, stServer := range stServers {
+	for _, stServer := range storageRPCs {
 		storageRPCServer := rpc.NewServer()
-		storageRPCServer.RegisterName("Storage", stServer)
+		err = storageRPCServer.RegisterName("Storage", stServer)
+		if err != nil {
+			return traceError(err)
+		}
 		// Add minio storage routes.
 		storageRouter := mux.PathPrefix(reservedBucket).Subrouter()
 		storageRouter.Path(path.Join("/storage", stServer.path)).Handler(storageRPCServer)
 	}
+	return nil
 }

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -123,6 +124,48 @@ func TestMaxObjectSize(t *testing.T) {
 	}
 }
 
+// Test urlPathSplit.
+func TestURLPathSplit(t *testing.T) {
+	type test struct {
+		urlPath    string
+		bucketName string
+		prefixName string
+	}
+
+	testCases := []test{
+		{
+			urlPath:    "/b/c/",
+			bucketName: "b",
+			prefixName: "c/",
+		},
+		{
+			urlPath:    "c/aa",
+			bucketName: "c",
+			prefixName: "aa",
+		},
+		{
+			urlPath:    "",
+			bucketName: "",
+			prefixName: "",
+		},
+		{
+			urlPath:    "/b",
+			bucketName: "b",
+			prefixName: "",
+		},
+	}
+
+	for i, testCase := range testCases {
+		bucketName, prefixName := urlPathSplit(testCase.urlPath)
+		if bucketName != testCase.bucketName {
+			t.Errorf("Tets %d: Expected %s, %s", i+1, testCase.bucketName, bucketName)
+		}
+		if prefixName != testCase.prefixName {
+			t.Errorf("Tets %d: Expected %s, %s", i+1, testCase.bucketName, bucketName)
+		}
+	}
+}
+
 // Tests minimum allowed part size.
 func TestMinAllowedPartSize(t *testing.T) {
 	sizes := []struct {
@@ -173,4 +216,66 @@ func TestMaxPartID(t *testing.T) {
 			t.Errorf("Test %d: Expected %t, got %t", i+1, s.isMax, isMax)
 		}
 	}
+}
+
+// Tests fetch local address.
+func TestLocalAddress(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	// need to set this to avoid stale values from other tests.
+	globalMinioPort = 9000
+	testCases := []struct {
+		srvCmdConfig serverCmdConfig
+		localAddr    string
+	}{
+		// Test 1 - local address is found.
+		{
+			srvCmdConfig: serverCmdConfig{
+				isDistXL: true,
+				disks: []string{
+					"localhost:/mnt/disk1",
+					"1.1.1.2:/mnt/disk2",
+					"1.1.2.1:/mnt/disk3",
+					"1.1.2.2:/mnt/disk4",
+				},
+			},
+			localAddr: fmt.Sprintf("localhost:%d", globalMinioPort),
+		},
+		// Test 2 - local address is everything.
+		{
+			srvCmdConfig: serverCmdConfig{
+				isDistXL: false,
+				disks: []string{
+					"/mnt/disk1",
+					"/mnt/disk2",
+					"/mnt/disk3",
+					"/mnt/disk4",
+				},
+			},
+			localAddr: fmt.Sprintf(":%d", globalMinioPort),
+		},
+		// Test 3 - local address is not found.
+		{
+			srvCmdConfig: serverCmdConfig{
+				isDistXL: true,
+				disks: []string{
+					"1.1.1.1:/mnt/disk1",
+					"1.1.1.2:/mnt/disk2",
+					"1.1.2.1:/mnt/disk3",
+					"1.1.2.2:/mnt/disk4",
+				},
+			},
+			localAddr: "",
+		},
+	}
+
+	// Validates fetching local address.
+	for i, testCase := range testCases {
+		localAddr := getLocalAddress(testCase.srvCmdConfig)
+		if localAddr != testCase.localAddr {
+			t.Fatalf("Test %d: Expected %s, got %s", i+1, testCase.localAddr, localAddr)
+		}
+	}
+
 }

@@ -25,25 +25,32 @@ import (
 )
 
 func newObjectLayerFn() ObjectLayer {
-	objLayerMutex.Lock()
-	defer objLayerMutex.Unlock()
+	globalObjLayerMutex.Lock()
+	defer globalObjLayerMutex.Unlock()
 	return globalObjectAPI
 }
 
 // newObjectLayer - initialize any object layer depending on the number of disks.
-func newObjectLayer(disks, ignoredDisks []string) (ObjectLayer, error) {
+func newObjectLayer(storageDisks []StorageAPI) (ObjectLayer, error) {
 	var objAPI ObjectLayer
 	var err error
-	if len(disks) == 1 {
+	if len(storageDisks) == 1 {
 		// Initialize FS object layer.
-		objAPI, err = newFSObjects(disks[0])
+		objAPI, err = newFSObjects(storageDisks[0])
 	} else {
 		// Initialize XL object layer.
-		objAPI, err = newXLObjects(disks, ignoredDisks)
+		objAPI, err = newXLObjects(storageDisks)
 	}
 	if err != nil {
 		return nil, err
 	}
+
+	// The following actions are performed here, so that any
+	// requests coming in early in the bootup sequence don't fail
+	// unexpectedly - e.g. if initEventNotifier was initialized
+	// after this function completes, an event could be generated
+	// before the notification system is ready, causing event
+	// drops or crashes.
 
 	// Migrate bucket policy from configDir to .minio.sys/buckets/
 	err = migrateBucketPolicyConfig(objAPI)
@@ -58,16 +65,9 @@ func newObjectLayer(disks, ignoredDisks []string) (ObjectLayer, error) {
 		return nil, err
 	}
 
-	// Register the callback that should be called when the process shuts down.
-	globalShutdownCBs.AddObjectLayerCB(func() errCode {
-		if objAPI != nil {
-			if sErr := objAPI.Shutdown(); sErr != nil {
-				errorIf(err, "Unable to shutdown object API.")
-				return exitFailure
-			}
-		}
-		return exitSuccess
-	})
+	// Initialize and load bucket policies.
+	err = initBucketPolicies(objAPI)
+	fatalIf(err, "Unable to load all bucket policies.")
 
 	// Initialize a new event notifier.
 	err = initEventNotifier(objAPI)
@@ -78,46 +78,52 @@ func newObjectLayer(disks, ignoredDisks []string) (ObjectLayer, error) {
 }
 
 // configureServer handler returns final handler for the http server.
-func configureServerHandler(srvCmdConfig serverCmdConfig) http.Handler {
-	// Initialize storage rpc servers for every disk that is hosted on this node.
-	storageRPCs, err := newRPCServer(srvCmdConfig)
-	fatalIf(err, "Unable to initialize storage RPC server.")
-
-	// Initialize API.
-	apiHandlers := objectAPIHandlers{
-		ObjectAPI: newObjectLayerFn,
-	}
-
-	// Initialize Web.
-	webHandlers := &webAPIHandlers{
-		ObjectAPI: newObjectLayerFn,
-	}
-
-	// Initialize Controller.
-	controllerHandlers := &controllerAPIHandlers{
-		ObjectAPI: newObjectLayerFn,
-	}
-
+func configureServerHandler(srvCmdConfig serverCmdConfig) (http.Handler, error) {
 	// Initialize router.
 	mux := router.NewRouter()
 
-	// Register all routers.
-	registerStorageRPCRouters(mux, storageRPCs)
-
 	// Initialize distributed NS lock.
-	initDistributedNSLock(mux, srvCmdConfig)
+	if srvCmdConfig.isDistXL {
+		// Register storage rpc router only if its a distributed setup.
+		err := registerStorageRPCRouters(mux, srvCmdConfig)
+		if err != nil {
+			return nil, err
+		}
+
+		// Register distributed namespace lock.
+		err = registerDistNSLockRouter(mux, srvCmdConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Register S3 peer communication router.
+	err := registerS3PeerRPCRouter(mux)
+	if err != nil {
+		return nil, err
+	}
 
 	// Register controller rpc router.
-	registerControllerRPCRouter(mux, controllerHandlers)
+	err = registerControlRPCRouter(mux, srvCmdConfig)
+	if err != nil {
+		return nil, err
+	}
 
 	// set environmental variable MINIO_BROWSER=off to disable minio web browser.
 	// By default minio web browser is enabled.
 	if !strings.EqualFold(os.Getenv("MINIO_BROWSER"), "off") {
-		registerWebRouter(mux, webHandlers)
+		// Register RPC router for web related calls.
+		if err = registerBrowserRPCRouter(mux); err != nil {
+			return nil, err
+		}
+
+		if err = registerWebRouter(mux); err != nil {
+			return nil, err
+		}
 	}
 
-	// Add new routers here.
-	registerAPIRouter(mux, apiHandlers)
+	// Add API router.
+	registerAPIRouter(mux)
 
 	// List of some generic handlers which are applied for all incoming requests.
 	var handlerFns = []HandlerFunc{
@@ -133,8 +139,6 @@ func configureServerHandler(srvCmdConfig serverCmdConfig) http.Handler {
 		setPrivateBucketHandler,
 		// Adds cache control for all browser requests.
 		setBrowserCacheControlHandler,
-		// Validates all incoming requests to have a valid date header.
-		setTimeValidityHandler,
 		// CORS setting for all browser API requests.
 		setCorsHandler,
 		// Validates all incoming URL resources, for invalid/unsupported
@@ -148,5 +152,5 @@ func configureServerHandler(srvCmdConfig serverCmdConfig) http.Handler {
 	}
 
 	// Register rest of the handlers.
-	return registerHandlers(mux, handlerFns...)
+	return registerHandlers(mux, handlerFns...), nil
 }

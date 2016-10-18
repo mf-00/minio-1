@@ -22,6 +22,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/minio/cli"
 	"github.com/minio/mc/pkg/console"
@@ -73,9 +74,6 @@ func init() {
 
 	// Set global trace flag.
 	globalTrace = os.Getenv("MINIO_TRACE") == "1"
-
-	// Set all the debug flags from ENV if any.
-	setGlobalsDebugFromEnv()
 }
 
 func migrate() {
@@ -159,7 +157,6 @@ func checkMainSyntax(c *cli.Context) {
 func Main() {
 	app := registerApp()
 	app.Before = func(c *cli.Context) error {
-
 		configDir := c.GlobalString("config-dir")
 		if configDir == "" {
 			fatalIf(errors.New("Config directory is empty"), "Unable to get config file.")
@@ -177,6 +174,23 @@ func Main() {
 		err := initConfig()
 		fatalIf(err, "Unable to initialize minio config.")
 
+		// Fetch access keys from environment variables and update the config.
+		accessKey := os.Getenv("MINIO_ACCESS_KEY")
+		secretKey := os.Getenv("MINIO_SECRET_KEY")
+		if accessKey != "" && secretKey != "" {
+			if !isValidAccessKey.MatchString(accessKey) {
+				fatalIf(errInvalidArgument, "Invalid access key.")
+			}
+			if !isValidSecretKey.MatchString(secretKey) {
+				fatalIf(errInvalidArgument, "Invalid secret key.")
+			}
+			// Set new credentials.
+			serverConfig.SetCredential(credential{
+				AccessKeyID:     accessKey,
+				SecretAccessKey: secretKey,
+			})
+		}
+
 		// Enable all loggers by now.
 		enableLoggers()
 
@@ -188,14 +202,16 @@ func Main() {
 
 		// Do not print update messages, if quiet flag is set.
 		if !globalQuiet {
-			if strings.HasPrefix(Version, "RELEASE.") {
-				updateMsg, _, err := getReleaseUpdate(minioUpdateStableURL)
+			if strings.HasPrefix(ReleaseTag, "RELEASE.") && c.Args().Get(0) != "update" {
+				updateMsg, _, err := getReleaseUpdate(minioUpdateStableURL, 1*time.Second)
 				if err != nil {
-					// Ignore any errors during getReleaseUpdate() because
-					// the internet might not be available.
+					// Ignore any errors during getReleaseUpdate(), possibly
+					// because of network errors.
 					return nil
 				}
-				console.Println(updateMsg)
+				if updateMsg.Update {
+					console.Println(updateMsg)
+				}
 			}
 		}
 		return nil

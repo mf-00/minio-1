@@ -18,8 +18,11 @@ package cmd
 
 import (
 	"crypto/md5"
+	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"errors"
+	"fmt"
+	"hash"
 	"io"
 	"os"
 	"path"
@@ -31,8 +34,7 @@ import (
 
 // fsObjects - Implements fs object layer.
 type fsObjects struct {
-	storage      StorageAPI
-	physicalDisk string
+	storage StorageAPI
 
 	// List pool management.
 	listPool *treeWalkPool
@@ -44,73 +46,27 @@ var fsTreeWalkIgnoredErrs = []error{
 	errVolumeNotFound,
 }
 
-// creates format.json, the FS format info in minioMetaBucket.
-func initFormatFS(storageDisk StorageAPI) error {
-	return writeFSFormatData(storageDisk, newFSFormatV1())
-}
-
-// loads format.json from minioMetaBucket if it exists.
-func loadFormatFS(storageDisk StorageAPI) (format formatConfigV1, err error) {
-	// Reads entire `format.json`.
-	buf, err := storageDisk.ReadAll(minioMetaBucket, fsFormatJSONFile)
-	if err != nil {
-		return formatConfigV1{}, err
-	}
-
-	// Unmarshal format config.
-	if err = json.Unmarshal(buf, &format); err != nil {
-		return formatConfigV1{}, err
-	}
-
-	// Return structured `format.json`.
-	return format, nil
-}
-
 // newFSObjects - initialize new fs object layer.
-func newFSObjects(disk string) (ObjectLayer, error) {
-	storage, err := newStorageAPI(disk)
-	if err != nil && err != errDiskNotFound {
-		return nil, err
-	}
-
-	// Attempt to create `.minio.sys`.
-	err = storage.MakeVol(minioMetaBucket)
-	if err != nil {
-		switch err {
-		// Ignore the errors.
-		case errVolumeExists, errDiskNotFound, errFaultyDisk:
-		default:
-			return nil, toObjectErr(err, minioMetaBucket)
-		}
+func newFSObjects(storage StorageAPI) (ObjectLayer, error) {
+	if storage == nil {
+		return nil, errInvalidArgument
 	}
 
 	// Runs house keeping code, like creating minioMetaBucket, cleaning up tmp files etc.
-	if err = fsHouseKeeping(storage); err != nil {
+	if err := fsHouseKeeping(storage); err != nil {
 		return nil, err
 	}
 
-	// loading format.json from minioMetaBucket.
-	// Note: The format.json content is ignored, reserved for future use.
-	format, err := loadFormatFS(storage)
+	// Load format and validate.
+	_, err := loadFormatFS(storage)
 	if err != nil {
-		if err == errFileNotFound {
-			// format.json doesn't exist, create it inside minioMetaBucket.
-			err = initFormatFS(storage)
-			if err != nil {
-				return nil, err
-			}
-		} else {
-			return nil, err
-		}
-	} else if !isFSFormat(format) {
-		return nil, errFSDiskFormat
+		return nil, fmt.Errorf("Unable to recognize backend format, %s", err)
 	}
 
 	// Initialize fs objects.
 	fs := fsObjects{
-		storage:      storage,
-		physicalDisk: disk,
-		listPool:     newTreeWalkPool(globalLookupTimeout),
+		storage:  storage,
+		listPool: newTreeWalkPool(globalLookupTimeout),
 	}
 
 	// Return successfully initialized object layer.
@@ -123,14 +79,14 @@ func (fs fsObjects) Shutdown() error {
 	_, err := fs.storage.ListDir(minioMetaBucket, mpartMetaPrefix)
 	if err != errFileNotFound {
 		// A nil err means that multipart directory is not empty hence do not remove '.minio.sys' volume.
-		// A non nil err means that an unexpected error occured
+		// A non nil err means that an unexpected error occurred
 		return toObjectErr(traceError(err))
 	}
 	// List if there are any bucket configuration entries.
 	_, err = fs.storage.ListDir(minioMetaBucket, bucketConfigPrefix)
 	if err != errFileNotFound {
 		// A nil err means that bucket config directory is not empty hence do not remove '.minio.sys' volume.
-		// A non nil err means that an unexpected error occured
+		// A non nil err means that an unexpected error occurred
 		return toObjectErr(traceError(err))
 	}
 	// Cleanup everything else.
@@ -151,10 +107,12 @@ func (fs fsObjects) Shutdown() error {
 func (fs fsObjects) StorageInfo() StorageInfo {
 	info, err := fs.storage.DiskInfo()
 	errorIf(err, "Unable to get disk info %#v", fs.storage)
-	return StorageInfo{
+	storageInfo := StorageInfo{
 		Total: info.Total,
 		Free:  info.Free,
 	}
+	storageInfo.Backend.Type = FS
+	return storageInfo
 }
 
 /// Bucket operations
@@ -194,10 +152,12 @@ func (fs fsObjects) ListBuckets() ([]BucketInfo, error) {
 	if err != nil {
 		return nil, toObjectErr(traceError(err))
 	}
+	var invalidBucketNames []string
 	for _, vol := range vols {
 		// StorageAPI can send volume names which are incompatible
 		// with buckets, handle it and skip them.
 		if !IsValidBucketName(vol.Name) {
+			invalidBucketNames = append(invalidBucketNames, vol.Name)
 			continue
 		}
 		// Ignore the volume special bucket.
@@ -208,6 +168,11 @@ func (fs fsObjects) ListBuckets() ([]BucketInfo, error) {
 			Name:    vol.Name,
 			Created: vol.Created,
 		})
+	}
+	// Print a user friendly message if we indeed skipped certain folders which are
+	// incompatible with S3's bucket name restrictions.
+	if len(invalidBucketNames) > 0 {
+		errorIf(errors.New("One or more invalid bucket names found"), "Skipping %s", invalidBucketNames)
 	}
 	sort.Sort(byBucketName(bucketInfos))
 	return bucketInfos, nil
@@ -265,6 +230,13 @@ func (fs fsObjects) GetObject(bucket, object string, offset int64, length int64,
 	if offset+length > fi.Size {
 		return traceError(InvalidRange{offset, length, fi.Size})
 	}
+
+	// get a random ID for lock instrumentation.
+	opsID := getOpsID()
+
+	// Lock the object before reading.
+	nsMutex.RLock(bucket, object, opsID)
+	defer nsMutex.RUnlock(bucket, object, opsID)
 
 	var totalLeft = length
 	bufSize := int64(readSizeV1)
@@ -368,7 +340,7 @@ func (fs fsObjects) GetObjectInfo(bucket, object string) (ObjectInfo, error) {
 }
 
 // PutObject - create an object.
-func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.Reader, metadata map[string]string) (objInfo ObjectInfo, err error) {
+func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.Reader, metadata map[string]string, sha256sum string) (objInfo ObjectInfo, err error) {
 	// Verify if bucket is valid.
 	if !IsValidBucketName(bucket) {
 		return ObjectInfo{}, traceError(BucketNameInvalid{Bucket: bucket})
@@ -394,6 +366,15 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 	// Initialize md5 writer.
 	md5Writer := md5.New()
 
+	hashWriters := []io.Writer{md5Writer}
+
+	var sha256Writer hash.Hash
+	if sha256sum != "" {
+		sha256Writer = sha256.New()
+		hashWriters = append(hashWriters, sha256Writer)
+	}
+	multiWriter := io.MultiWriter(hashWriters...)
+
 	// Limit the reader to its provided size if specified.
 	var limitDataReader io.Reader
 	if size > 0 {
@@ -417,12 +398,13 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 			bufSize = size
 		}
 		buf := make([]byte, int(bufSize))
-		teeReader := io.TeeReader(limitDataReader, md5Writer)
+		teeReader := io.TeeReader(limitDataReader, multiWriter)
 		var bytesWritten int64
 		bytesWritten, err = fsCreateFile(fs.storage, teeReader, buf, minioMetaBucket, tempObj)
 		if err != nil {
+			errorIf(err, "Failed to create object %s/%s", bucket, object)
 			fs.storage.DeleteFile(minioMetaBucket, tempObj)
-			return ObjectInfo{}, toObjectErr(traceError(err), bucket, object)
+			return ObjectInfo{}, toObjectErr(err, bucket, object)
 		}
 
 		// Should return IncompleteBody{} error when reader has fewer
@@ -439,16 +421,6 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 		metadata["md5Sum"] = newMD5Hex
 	}
 
-	// Validate if payload is valid.
-	if isSignVerify(data) {
-		if vErr := data.(*signVerifyReader).Verify(); vErr != nil {
-			// Incoming payload wrong, delete the temporary object.
-			fs.storage.DeleteFile(minioMetaBucket, tempObj)
-			// Error return.
-			return ObjectInfo{}, toObjectErr(traceError(vErr), bucket, object)
-		}
-	}
-
 	// md5Hex representation.
 	md5Hex := metadata["md5Sum"]
 	if md5Hex != "" {
@@ -459,6 +431,22 @@ func (fs fsObjects) PutObject(bucket string, object string, size int64, data io.
 			return ObjectInfo{}, traceError(BadDigest{md5Hex, newMD5Hex})
 		}
 	}
+
+	if sha256sum != "" {
+		newSHA256sum := hex.EncodeToString(sha256Writer.Sum(nil))
+		if newSHA256sum != sha256sum {
+			// SHA256 mismatch, delete the temporary object.
+			fs.storage.DeleteFile(minioMetaBucket, tempObj)
+			return ObjectInfo{}, traceError(SHA256Mismatch{})
+		}
+	}
+
+	// get a random ID for lock instrumentation.
+	opsID := getOpsID()
+
+	// Lock the object before comitting the object.
+	nsMutex.RLock(bucket, object, opsID)
+	defer nsMutex.RUnlock(bucket, object, opsID)
 
 	// Entire object was written to the temp location, now it's safe to rename it to the actual location.
 	err = fs.storage.RenameFile(minioMetaBucket, tempObj, bucket, object)
@@ -495,6 +483,14 @@ func (fs fsObjects) DeleteObject(bucket, object string) error {
 	if !IsValidObjectName(object) {
 		return traceError(ObjectNameInvalid{Bucket: bucket, Object: object})
 	}
+	// get a random ID for lock instrumentation.
+	opsID := getOpsID()
+
+	// Lock the object before deleting so that an in progress GetObject does not return
+	// corrupt data or there is no race with a PutObject.
+	nsMutex.RLock(bucket, object, opsID)
+	defer nsMutex.RUnlock(bucket, object, opsID)
+
 	err := fs.storage.DeleteFile(minioMetaBucket, path.Join(bucketMetaPrefix, bucket, object, fsMetaJSONFile))
 	if err != nil && err != errFileNotFound {
 		return toObjectErr(traceError(err), bucket, object)
@@ -655,12 +651,12 @@ func (fs fsObjects) HealObject(bucket, object string) error {
 	return traceError(NotImplemented{})
 }
 
-// HealListObjects - list objects for healing. Valid only for XL
-func (fs fsObjects) ListObjectsHeal(bucket, prefix, marker, delimiter string, maxKeys int) (ListObjectsInfo, error) {
-	return ListObjectsInfo{}, traceError(NotImplemented{})
+// HealBucket - no-op for fs, Valid only for XL.
+func (fs fsObjects) HealBucket(bucket string) error {
+	return traceError(NotImplemented{})
 }
 
-// HealDiskMetadata -- heal disk metadata, not supported in FS
-func (fs fsObjects) HealDiskMetadata() error {
-	return NotImplemented{}
+// ListObjectsHeal - list all objects to be healed. Valid only for XL
+func (fs fsObjects) ListObjectsHeal(bucket, prefix, marker, delimiter string, maxKeys int) (ListObjectsInfo, error) {
+	return ListObjectsInfo{}, traceError(NotImplemented{})
 }

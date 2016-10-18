@@ -81,6 +81,14 @@ func toStorageErr(err error) error {
 		return errCorruptedFormat
 	case errUnformattedDisk.Error():
 		return errUnformattedDisk
+	case errInvalidAccessKeyID.Error():
+		return errInvalidAccessKeyID
+	case errAuthentication.Error():
+		return errAuthentication
+	case errServerVersionMismatch.Error():
+		return errServerVersionMismatch
+	case errServerTimeMismatch.Error():
+		return errServerTimeMismatch
 	}
 	return err
 }
@@ -100,17 +108,18 @@ func newRPCClient(networkPath string) (StorageAPI, error) {
 
 	// Dial minio rpc storage http path.
 	rpcPath := path.Join(storageRPCPath, netPath)
-	port := getPort(srvConfig.serverAddr)
-	rpcAddr := netAddr + ":" + strconv.Itoa(port)
+	rpcAddr := netAddr + ":" + strconv.Itoa(globalMinioPort)
 	// Initialize rpc client with network address and rpc path.
 	cred := serverConfig.GetCredential()
 	rpcClient := newAuthClient(&authConfig{
 		accessKey:   cred.AccessKeyID,
 		secretKey:   cred.SecretAccessKey,
+		secureConn:  isSSL(),
 		address:     rpcAddr,
 		path:        rpcPath,
 		loginMethod: "Storage.LoginHandler",
 	})
+
 	// Initialize network storage.
 	ndisk := &networkStorage{
 		netAddr:   netAddr,
@@ -120,6 +129,11 @@ func newRPCClient(networkPath string) (StorageAPI, error) {
 
 	// Returns successfully here.
 	return ndisk, nil
+}
+
+// Stringer interface compatible representation of network device.
+func (n networkStorage) String() string {
+	return n.netAddr + ":" + n.netPath
 }
 
 // DiskInfo - fetch disk information for a remote disk.

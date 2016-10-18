@@ -19,8 +19,6 @@ package cmd
 import (
 	"time"
 
-	"os"
-
 	"github.com/fatih/color"
 	"github.com/mf-00/newgo/pkg/objcache"
 )
@@ -32,12 +30,13 @@ const (
 
 // minio configuration related constants.
 const (
-	globalMinioConfigVersion = "7"
-	globalMinioConfigDir     = ".minio"
-	globalMinioCertsDir      = "certs"
-	globalMinioCertFile      = "public.crt"
-	globalMinioKeyFile       = "private.key"
-	globalMinioConfigFile    = "config.json"
+	globalMinioConfigVersion      = "9"
+	globalMinioConfigDir          = ".minio"
+	globalMinioCertsDir           = "certs"
+	globalMinioCertFile           = "public.crt"
+	globalMinioKeyFile            = "private.key"
+	globalMinioConfigFile         = "config.json"
+	globalMinioCertExpireWarnDays = time.Hour * 24 * 30 // 30 days.
 	// Add new global values here.
 )
 
@@ -45,9 +44,6 @@ var (
 	globalQuiet = false // Quiet flag set via command line
 	globalTrace = false // Trace flag set via environment setting.
 
-	globalDebug       = false // Debug flag set to print debug info.
-	globalDebugLock   = false // Lock debug info set via environment variable MINIO_DEBUG=lock .
-	globalDebugMemory = false // Memory debug info set via environment variable MINIO_DEBUG=mem
 	// Add new global flags here.
 
 	// Maximum connections handled per
@@ -57,6 +53,13 @@ var (
 	globalMaxCacheSize = uint64(maxCacheSize)
 	// Cache expiry.
 	globalCacheExpiry = objcache.DefaultExpiry
+	// Minio local server address (in `host:port` format)
+	globalMinioAddr = ""
+	// Minio default port, can be changed through command line.
+	globalMinioPort = 9000
+	// Peer communication struct
+	globalS3Peers = s3Peers{}
+
 	// Add new variable global values here.
 )
 
@@ -68,28 +71,18 @@ var (
 
 var (
 	// The maximum allowed difference between the request generation time and the server processing time
-	maxSkewTime = 15 * time.Minute
+	globalMaxSkewTime = 15 * time.Minute
 )
 
 // global colors.
 var (
-	colorBlue = color.New(color.FgBlue).SprintfFunc()
-	colorBold = color.New(color.Bold).SprintFunc()
+	colorRed   = color.New(color.FgRed).SprintFunc()
+	colorBold  = color.New(color.Bold).SprintFunc()
+	colorBlue  = color.New(color.FgBlue).SprintfFunc()
+	colorGreen = color.New(color.FgGreen).SprintfFunc()
 )
 
 var (
 	newgo         = "newgo"
 	defaultRegion = "us-east-1"
 )
-
-// fetch from environment variables and set the global values related to locks.
-func setGlobalsDebugFromEnv() {
-	debugEnv := os.Getenv("MINIO_DEBUG")
-	switch debugEnv {
-	case "lock":
-		globalDebugLock = true
-	case "mem":
-		globalDebugMemory = true
-	}
-	globalDebug = globalDebugLock || globalDebugMemory
-}

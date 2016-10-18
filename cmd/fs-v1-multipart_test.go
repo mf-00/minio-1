@@ -31,10 +31,7 @@ func TestNewMultipartUploadFaultyDisk(t *testing.T) {
 	// Prepare for tests
 	disk := filepath.Join(os.TempDir(), "minio-"+nextSuffix())
 	defer removeAll(disk)
-	obj, err := newFSObjects(disk)
-	if err != nil {
-		t.Fatal("Cannot create a new FS object: ", err)
-	}
+	obj := initFSObjects(disk, t)
 
 	fs := obj.(fsObjects)
 	bucketName := "bucket"
@@ -67,18 +64,14 @@ func TestPutObjectPartFaultyDisk(t *testing.T) {
 	// Prepare for tests
 	disk := filepath.Join(os.TempDir(), "minio-"+nextSuffix())
 	defer removeAll(disk)
-	obj, err := newFSObjects(disk)
-	if err != nil {
-		t.Fatal("Cannot create a new FS object: ", err)
-	}
-
+	obj := initFSObjects(disk, t)
 	fs := obj.(fsObjects)
 	bucketName := "bucket"
 	objectName := "object"
 	data := []byte("12345")
 	dataLen := int64(len(data))
 
-	if err = obj.MakeBucket(bucketName); err != nil {
+	if err := obj.MakeBucket(bucketName); err != nil {
 		t.Fatal("Cannot create bucket, err: ", err)
 	}
 
@@ -90,13 +83,14 @@ func TestPutObjectPartFaultyDisk(t *testing.T) {
 	md5Writer := md5.New()
 	md5Writer.Write(data)
 	md5Hex := hex.EncodeToString(md5Writer.Sum(nil))
+	sha256sum := ""
 
 	// Test with faulty disk
 	fsStorage := fs.storage.(*posix)
 	for i := 1; i <= 7; i++ {
 		// Faulty disk generates errFaultyDisk at 'i' storage api call number
 		fs.storage = newNaughtyDisk(fsStorage, map[int]error{i: errFaultyDisk}, nil)
-		if _, err := fs.PutObjectPart(bucketName, objectName, uploadID, 1, dataLen, bytes.NewReader(data), md5Hex); errorCause(err) != errFaultyDisk {
+		if _, err := fs.PutObjectPart(bucketName, objectName, uploadID, 1, dataLen, bytes.NewReader(data), md5Hex, sha256sum); errorCause(err) != errFaultyDisk {
 			switch i {
 			case 1:
 				if !isSameType(errorCause(err), BucketNotFound{}) {
@@ -118,17 +112,14 @@ func TestCompleteMultipartUploadFaultyDisk(t *testing.T) {
 	// Prepare for tests
 	disk := filepath.Join(os.TempDir(), "minio-"+nextSuffix())
 	defer removeAll(disk)
-	obj, err := newFSObjects(disk)
-	if err != nil {
-		t.Fatal("Cannot create a new FS object: ", err)
-	}
+	obj := initFSObjects(disk, t)
 
 	fs := obj.(fsObjects)
 	bucketName := "bucket"
 	objectName := "object"
 	data := []byte("12345")
 
-	if err = obj.MakeBucket(bucketName); err != nil {
+	if err := obj.MakeBucket(bucketName); err != nil {
 		t.Fatal("Cannot create bucket, err: ", err)
 	}
 
@@ -140,8 +131,9 @@ func TestCompleteMultipartUploadFaultyDisk(t *testing.T) {
 	md5Writer := md5.New()
 	md5Writer.Write(data)
 	md5Hex := hex.EncodeToString(md5Writer.Sum(nil))
+	sha256sum := ""
 
-	if _, err := fs.PutObjectPart(bucketName, objectName, uploadID, 1, 5, bytes.NewReader(data), md5Hex); err != nil {
+	if _, err := fs.PutObjectPart(bucketName, objectName, uploadID, 1, 5, bytes.NewReader(data), md5Hex, sha256sum); err != nil {
 		t.Fatal("Unexpected error ", err)
 	}
 
@@ -173,17 +165,13 @@ func TestListMultipartUploadsFaultyDisk(t *testing.T) {
 	// Prepare for tests
 	disk := filepath.Join(os.TempDir(), "minio-"+nextSuffix())
 	defer removeAll(disk)
-	obj, err := newFSObjects(disk)
-	if err != nil {
-		t.Fatal("Cannot create a new FS object: ", err)
-	}
-
+	obj := initFSObjects(disk, t)
 	fs := obj.(fsObjects)
 	bucketName := "bucket"
 	objectName := "object"
 	data := []byte("12345")
 
-	if err = obj.MakeBucket(bucketName); err != nil {
+	if err := obj.MakeBucket(bucketName); err != nil {
 		t.Fatal("Cannot create bucket, err: ", err)
 	}
 
@@ -195,8 +183,9 @@ func TestListMultipartUploadsFaultyDisk(t *testing.T) {
 	md5Writer := md5.New()
 	md5Writer.Write(data)
 	md5Hex := hex.EncodeToString(md5Writer.Sum(nil))
+	sha256sum := ""
 
-	if _, err := fs.PutObjectPart(bucketName, objectName, uploadID, 1, 5, bytes.NewReader(data), md5Hex); err != nil {
+	if _, err := fs.PutObjectPart(bucketName, objectName, uploadID, 1, 5, bytes.NewReader(data), md5Hex, sha256sum); err != nil {
 		t.Fatal("Unexpected error ", err)
 	}
 

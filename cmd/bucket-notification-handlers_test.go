@@ -5,12 +5,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"sync"
+	"strconv"
 	"testing"
+
+	"github.com/gorilla/mux"
 )
 
 // Implement a dummy flush writer.
@@ -157,47 +161,183 @@ func TestSendBucketNotification(t *testing.T) {
 	}
 }
 
-func initMockEventNotifier(objAPI ObjectLayer) error {
-	if objAPI == nil {
-		return errInvalidArgument
+func testListenBucketNotificationHandler(obj ObjectLayer, instanceType string, t TestErrHandler) {
+	// Register the API end points with XL/FS object layer.
+	apiRouter := initTestAPIEndPoints(obj, []string{
+		"ListenBucketNotification",
+	})
+	mux, ok := apiRouter.(*mux.Router)
+	if !ok {
+		t.Fatal("Unable to setup test")
 	}
-	globalEventNotifier = &eventNotifier{
-		rwMutex:             &sync.RWMutex{},
-		queueTargets:        nil,
-		notificationConfigs: make(map[string]*notificationConfig),
-		snsTargets:          make(map[string][]chan []NotificationEvent),
-	}
-	return nil
-}
+	registerS3PeerRPCRouter(mux)
 
-func testGetBucketNotificationHandler(obj ObjectLayer, instanceType string, t TestErrHandler) {
+	testServer := httptest.NewServer(apiRouter)
+	defer testServer.Close()
+
+	// initialize the server and obtain the credentials and root.
+	// credentials are necessary to sign the HTTP request.
+	rootPath, err := newTestConfig("us-east-1")
+	if err != nil {
+		t.Fatalf("Init Test config failed")
+	}
+	// remove the root folder after the test ends.
+	defer removeAll(rootPath)
+
+	credentials := serverConfig.GetCredential()
+
+	// setup port and minio addr
+	_, portStr, err := net.SplitHostPort(testServer.Listener.Addr().String())
+	if err != nil {
+		t.Fatalf("Initialisation error: %v", err)
+	}
+	globalMinioPort, err = strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("Initialisation error: %v", err)
+	}
+	globalMinioAddr = fmt.Sprintf(":%d", globalMinioPort)
+	// initialize the peer client(s)
+	initGlobalS3Peers([]string{})
+
+	invalidBucket := "Invalid\\Bucket"
+	noNotificationBucket := "nonotificationbucket"
 	// get random bucket name.
 	randBucket := getRandomBucketName()
-	noNotificationBucket := "nonotification"
-	invalidBucket := "Invalid^Bucket"
-
-	// Create buckets for the following test cases.
 	for _, bucket := range []string{randBucket, noNotificationBucket} {
-		err := obj.MakeBucket(bucket)
+		err = obj.MakeBucket(bucket)
 		if err != nil {
-			// failed to create newbucket, abort.
+			// failed to create bucket, abort.
 			t.Fatalf("Failed to create bucket %s %s : %s", bucket,
 				instanceType, err)
 		}
 	}
 
-	// Initialize sample bucket notification config.
+	// Initialize global event notifier with mock queue targets.
+	err = initEventNotifier(obj)
+	if err != nil {
+		t.Fatalf("Test %s: Failed to initialize mock event notifier %v",
+			instanceType, err)
+	}
+
+	var testRec *httptest.ResponseRecorder
+	var testReq *http.Request
+	var tErr error
+
+	signatureMismatchError := getAPIError(ErrContentSHA256Mismatch)
+	type testKind int
+	const (
+		CheckStatus testKind = iota
+		InvalidAuth
+		AsyncHandler
+	)
+	tooBigPrefix := string(bytes.Repeat([]byte("a"), 1025))
+	validEvents := []string{"s3:ObjectCreated:*", "s3:ObjectRemoved:*"}
+	invalidEvents := []string{"invalidEvent"}
+	testCases := []struct {
+		bucketName       string
+		prefixes         []string
+		suffixes         []string
+		events           []string
+		kind             testKind
+		expectedHTTPCode int
+		expectedAPIError string
+	}{
+		// FIXME: Need to find a way to run valid listen bucket notification test case without blocking the unit test.
+		{randBucket, []string{}, []string{}, invalidEvents, CheckStatus, signatureMismatchError.HTTPStatusCode, ""},
+		{randBucket, []string{tooBigPrefix}, []string{}, validEvents, CheckStatus, http.StatusBadRequest, ""},
+		{invalidBucket, []string{}, []string{}, validEvents, CheckStatus, http.StatusBadRequest, ""},
+		{randBucket, []string{}, []string{}, validEvents, InvalidAuth, signatureMismatchError.HTTPStatusCode, signatureMismatchError.Code},
+	}
+
+	for i, test := range testCases {
+		testRec = httptest.NewRecorder()
+		testReq, tErr = newTestSignedRequestV4("GET",
+			getListenBucketNotificationURL("", test.bucketName, test.prefixes, test.suffixes, test.events),
+			0, nil, credentials.AccessKeyID, credentials.SecretAccessKey)
+		if tErr != nil {
+			t.Fatalf("%s: Failed to create HTTP testRequest for ListenBucketNotification: <ERROR> %v", instanceType, tErr)
+		}
+		// Set X-Amz-Content-SHA256 in header different from what was used to calculate Signature.
+		if test.kind == InvalidAuth {
+			// Triggering a authentication type check failure.
+			testReq.Header.Set("x-amz-content-sha256", "somethingElse")
+		}
+		if test.kind == AsyncHandler {
+			go apiRouter.ServeHTTP(testRec, testReq)
+		} else {
+			apiRouter.ServeHTTP(testRec, testReq)
+			switch test.kind {
+			case InvalidAuth:
+				rspBytes, rErr := ioutil.ReadAll(testRec.Body)
+				if rErr != nil {
+					t.Errorf("Test %d: %s: Failed to read response body: <ERROR> %v", i+1, instanceType, rErr)
+				}
+				var errCode APIError
+				xErr := xml.Unmarshal(rspBytes, &errCode)
+				if xErr != nil {
+					t.Errorf("Test %d: %s: Failed to unmarshal error XML: <ERROR> %v", i+1, instanceType, xErr)
+
+				}
+
+				if errCode.Code != test.expectedAPIError {
+					t.Errorf("Test %d: %s: Expected error code %s but received %s: <ERROR> %v", i+1,
+						instanceType, test.expectedAPIError, errCode.Code, err)
+
+				}
+				fallthrough
+			case CheckStatus:
+				if testRec.Code != test.expectedHTTPCode {
+					t.Errorf("Test %d: %s: expected HTTP code %d, but received %d: <ERROR> %v",
+						i+1, instanceType, test.expectedHTTPCode, testRec.Code, err)
+				}
+			}
+		}
+	}
+
+	// Nil Object layer
+	nilAPIRouter := initTestAPIEndPoints(nil, []string{
+		"PutBucketNotification",
+		"ListenBucketNotification",
+	})
+	testRec = httptest.NewRecorder()
+	testReq, tErr = newTestSignedRequestV4("GET",
+		getListenBucketNotificationURL("", randBucket, []string{}, []string{"*.jpg"}, []string{"s3:ObjectCreated:*", "s3:ObjectRemoved:*"}),
+		0, nil, credentials.AccessKeyID, credentials.SecretAccessKey)
+	if tErr != nil {
+		t.Fatalf("%s: Failed to create HTTP testRequest for ListenBucketNotification: <ERROR> %v", instanceType, tErr)
+	}
+	nilAPIRouter.ServeHTTP(testRec, testReq)
+	if testRec.Code != http.StatusServiceUnavailable {
+		t.Errorf("Test %d: %s: expected HTTP code %d, but received %d: <ERROR> %v",
+			1, instanceType, http.StatusServiceUnavailable, testRec.Code, err)
+	}
+}
+
+func TestListenBucketNotificationHandler(t *testing.T) {
+	ExecObjectLayerTest(t, testListenBucketNotificationHandler)
+}
+
+func testRemoveNotificationConfig(obj ObjectLayer, instanceType string, t TestErrHandler) {
+	invalidBucket := "Invalid\\Bucket"
+	// get random bucket name.
+	randBucket := getRandomBucketName()
+
+	err := obj.MakeBucket(randBucket)
+	if err != nil {
+		// failed to create bucket, abort.
+		t.Fatalf("Failed to create bucket %s %s : %s", randBucket,
+			instanceType, err)
+	}
+
 	sampleNotificationBytes := []byte("<NotificationConfiguration><TopicConfiguration>" +
 		"<Event>s3:ObjectCreated:*</Event><Event>s3:ObjectRemoved:*</Event><Filter>" +
 		"<S3Key></S3Key></Filter><Id></Id><Topic>arn:minio:sns:us-east-1:1474332374:listen</Topic>" +
 		"</TopicConfiguration></NotificationConfiguration>")
 
-	emptyNotificationBytes := []byte("<NotificationConfiguration></NotificationConfiguration>")
-
 	// Register the API end points with XL/FS object layer.
 	apiRouter := initTestAPIEndPoints(obj, []string{
-		"GetBucketNotificationHandler",
-		"PutBucketNotificationHandler",
+		"PutBucketNotification",
+		"ListenBucketNotification",
 	})
 
 	// initialize the server and obtain the credentials and root.
@@ -212,115 +352,36 @@ func testGetBucketNotificationHandler(obj ObjectLayer, instanceType string, t Te
 	credentials := serverConfig.GetCredential()
 
 	//Initialize global event notifier with mock queue targets.
-	err = initMockEventNotifier(obj)
+	err = initEventNotifier(obj)
 	if err != nil {
 		t.Fatalf("Test %s: Failed to initialize mock event notifier %v",
 			instanceType, err)
 	}
-	// Initialize httptest recorder.
-	rec := httptest.NewRecorder()
-
-	// Prepare notification config for one of the test cases.
-	req, err := newTestSignedRequest("PUT", getPutBucketNotificationURL("", randBucket),
+	// Set sample bucket notification on randBucket.
+	testRec := httptest.NewRecorder()
+	testReq, tErr := newTestSignedRequestV4("PUT", getPutBucketNotificationURL("", randBucket),
 		int64(len(sampleNotificationBytes)), bytes.NewReader(sampleNotificationBytes),
 		credentials.AccessKeyID, credentials.SecretAccessKey)
-	if err != nil {
-		t.Fatalf("Test %d %s: Failed to create HTTP request for PutBucketNotification: <ERROR> %v",
-			1, instanceType, err)
-	}
-
-	apiRouter.ServeHTTP(rec, req)
-
-	type testKind int
-	const (
-		CompareBytes testKind = iota
-		CheckStatus
-		InvalidAuth
-	)
-	testCases := []struct {
-		bucketName                string
-		kind                      testKind
-		expectedNotificationBytes []byte
-		expectedHTTPCode          int
-	}{
-		{randBucket, CompareBytes, sampleNotificationBytes, http.StatusOK},
-		{randBucket, InvalidAuth, nil, http.StatusBadRequest},
-		{noNotificationBucket, CompareBytes, emptyNotificationBytes, http.StatusOK},
-		{invalidBucket, CheckStatus, nil, http.StatusBadRequest},
-	}
-	signatureMismatchCode := getAPIError(ErrContentSHA256Mismatch).Code
-	for i, test := range testCases {
-		testRec := httptest.NewRecorder()
-		testReq, tErr := newTestSignedRequest("GET", getGetBucketNotificationURL("", test.bucketName),
-			int64(0), nil, credentials.AccessKeyID, credentials.SecretAccessKey)
-		if tErr != nil {
-			t.Fatalf("Test %d: %s: Failed to create HTTP testRequest for GetBucketNotification: <ERROR> %v",
-				i+1, instanceType, tErr)
-		}
-
-		// Set X-Amz-Content-SHA256 in header different from what was used to calculate Signature.
-		if test.kind == InvalidAuth {
-			// Triggering a authentication type check failure.
-			testReq.Header.Set("x-amz-content-sha256", "somethingElse")
-		}
-
-		apiRouter.ServeHTTP(testRec, testReq)
-
-		switch test.kind {
-		case CompareBytes:
-			rspBytes, rErr := ioutil.ReadAll(testRec.Body)
-			if rErr != nil {
-				t.Errorf("Test %d: %s: Failed to read response body: <ERROR> %v", i+1, instanceType, rErr)
-			}
-			if !bytes.Equal(rspBytes, test.expectedNotificationBytes) {
-				t.Errorf("Test %d: %s: Notification config doesn't match expected value %s: <ERROR> %v",
-					i+1, instanceType, string(test.expectedNotificationBytes), err)
-			}
-		case InvalidAuth:
-			rspBytes, rErr := ioutil.ReadAll(testRec.Body)
-			if rErr != nil {
-				t.Errorf("Test %d: %s: Failed to read response body: <ERROR> %v", i+1, instanceType, rErr)
-			}
-			var errCode APIError
-			xErr := xml.Unmarshal(rspBytes, &errCode)
-			if xErr != nil {
-				t.Errorf("Test %d: %s: Failed to unmarshal error XML: <ERROR> %v", i+1, instanceType, xErr)
-
-			}
-
-			if errCode.Code != signatureMismatchCode {
-				t.Errorf("Test %d: %s: Expected error code %s but received %s: <ERROR> %v", i+1,
-					instanceType, signatureMismatchCode, errCode.Code, err)
-
-			}
-			fallthrough
-		case CheckStatus:
-			if testRec.Code != test.expectedHTTPCode {
-				t.Errorf("Test %d: %s: expected HTTP code %d, but received %d: <ERROR> %v",
-					i+1, instanceType, test.expectedHTTPCode, testRec.Code, err)
-			}
-		}
-	}
-
-	// Nil Object layer
-	nilAPIRouter := initTestAPIEndPoints(nil, []string{
-		"GetBucketNotificationHandler",
-		"PutBucketNotificationHandler",
-	})
-	testRec := httptest.NewRecorder()
-	testReq, tErr := newTestSignedRequest("GET", getGetBucketNotificationURL("", randBucket),
-		int64(0), nil, credentials.AccessKeyID, credentials.SecretAccessKey)
 	if tErr != nil {
-		t.Fatalf("Test %d: %s: Failed to create HTTP testRequest for GetBucketNotification: <ERROR> %v",
-			len(testCases)+1, instanceType, tErr)
+		t.Fatalf("%s: Failed to create HTTP testRequest for PutBucketNotification: <ERROR> %v", instanceType, tErr)
 	}
-	nilAPIRouter.ServeHTTP(testRec, testReq)
-	if testRec.Code != http.StatusServiceUnavailable {
-		t.Errorf("Test %d: %s: expected HTTP code %d, but received %d: <ERROR> %v",
-			len(testCases)+1, instanceType, http.StatusServiceUnavailable, testRec.Code, err)
+	apiRouter.ServeHTTP(testRec, testReq)
+
+	testCases := []struct {
+		bucketName  string
+		expectedErr error
+	}{
+		{invalidBucket, BucketNameInvalid{Bucket: invalidBucket}},
+		{randBucket, nil},
+	}
+	for i, test := range testCases {
+		tErr := removeNotificationConfig(test.bucketName, obj)
+		if tErr != test.expectedErr {
+			t.Errorf("Test %d: %s expected error %v, but received %v", i+1, instanceType, test.expectedErr, tErr)
+		}
 	}
 }
 
-func TestGetBucketNotificationHandler(t *testing.T) {
-	ExecObjectLayerTest(t, testGetBucketNotificationHandler)
+func TestRemoveNotificationConfig(t *testing.T) {
+	ExecObjectLayerTest(t, testRemoveNotificationConfig)
 }

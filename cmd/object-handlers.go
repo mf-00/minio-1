@@ -27,17 +27,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 
 	mux "github.com/gorilla/mux"
 )
-
-var objLayerMutex *sync.Mutex
-var globalObjectAPI ObjectLayer
-
-func init() {
-	objLayerMutex = &sync.Mutex{}
-}
 
 // supportedGetReqParams - supported request parameters for GET presigned request.
 var supportedGetReqParams = map[string]string{
@@ -110,8 +102,15 @@ func (api objectAPIHandlers) GetObjectHandler(w http.ResponseWriter, r *http.Req
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -222,8 +221,15 @@ func (api objectAPIHandlers) HeadObjectHandler(w http.ResponseWriter, r *http.Re
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -279,8 +285,15 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -355,11 +368,13 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	// Save other metadata if available.
 	metadata := objInfo.UserDefined
 
-	// Do not set `md5sum` as CopyObject will not keep the
-	// same md5sum as the source.
+	// Remove the etag from source metadata because if it was uploaded as a multipart object
+	// then its ETag will not be MD5sum of the object.
+	delete(metadata, "md5Sum")
 
+	sha256sum := ""
 	// Create the object.
-	objInfo, err = objectAPI.PutObject(bucket, object, size, pipeReader, metadata)
+	objInfo, err = objectAPI.PutObject(bucket, object, size, pipeReader, metadata, sha256sum)
 	if err != nil {
 		// Close the this end of the pipe upon error in PutObject.
 		pipeReader.CloseWithError(err)
@@ -378,17 +393,15 @@ func (api objectAPIHandlers) CopyObjectHandler(w http.ResponseWriter, r *http.Re
 	// write success response.
 	writeSuccessResponse(w, encodedSuccessResponse)
 
-	if globalEventNotifier.IsBucketNotificationSet(bucket) {
-		// Notify object created event.
-		eventNotify(eventData{
-			Type:    ObjectCreatedCopy,
-			Bucket:  bucket,
-			ObjInfo: objInfo,
-			ReqParams: map[string]string{
-				"sourceIPAddress": r.RemoteAddr,
-			},
-		})
-	}
+	// Notify object created event.
+	eventNotify(eventData{
+		Type:    ObjectCreatedCopy,
+		Bucket:  bucket,
+		ObjInfo: objInfo,
+		ReqParams: map[string]string{
+			"sourceIPAddress": r.RemoteAddr,
+		},
+	})
 }
 
 // PutObjectHandler - PUT Object
@@ -401,12 +414,12 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// If the matching failed, it means that the X-Amz-Copy-Source was
-	// wrong, fail right here.
+	// X-Amz-Copy-Source shouldn't be set for this call.
 	if _, ok := r.Header["X-Amz-Copy-Source"]; ok {
 		writeErrorResponse(w, r, ErrInvalidCopySource, r.URL.Path)
 		return
 	}
+
 	vars := mux.Vars(r)
 	bucket := vars["bucket"]
 	object := vars["object"]
@@ -418,6 +431,7 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		writeErrorResponse(w, r, ErrInvalidDigest, r.URL.Path)
 		return
 	}
+
 	/// if Content-Length is unknown/missing, deny the request
 	size := r.ContentLength
 	rAuthType := getRequestAuthType(r)
@@ -434,6 +448,7 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		writeErrorResponse(w, r, ErrMissingContentLength, r.URL.Path)
 		return
 	}
+
 	/// maximum Upload size for objects in a single operation
 	if isMaxObjectSize(size) {
 		writeErrorResponse(w, r, ErrEntityTooLarge, r.URL.Path)
@@ -444,6 +459,8 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 	metadata := extractMetadataFromHeader(r.Header)
 	// Make sure we hex encode md5sum here.
 	metadata["md5Sum"] = hex.EncodeToString(md5Bytes)
+
+	sha256sum := ""
 
 	var objInfo ObjectInfo
 	switch rAuthType {
@@ -458,7 +475,7 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 			return
 		}
 		// Create anonymous object.
-		objInfo, err = objectAPI.PutObject(bucket, object, size, r.Body, metadata)
+		objInfo, err = objectAPI.PutObject(bucket, object, size, r.Body, metadata, sha256sum)
 	case authTypeStreamingSigned:
 		// Initialize stream signature verifier.
 		reader, s3Error := newSignV4ChunkedReader(r)
@@ -467,12 +484,26 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
-		objInfo, err = objectAPI.PutObject(bucket, object, size, reader, metadata)
+		objInfo, err = objectAPI.PutObject(bucket, object, size, reader, metadata, sha256sum)
+	case authTypeSignedV2, authTypePresignedV2:
+		s3Error := isReqAuthenticatedV2(r)
+		if s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
+		objInfo, err = objectAPI.PutObject(bucket, object, size, r.Body, metadata, sha256sum)
 	case authTypePresigned, authTypeSigned:
-		// Initialize signature verifier.
-		reader := newSignVerify(r)
+		if s3Error := reqSignatureV4Verify(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
+		if !skipContentSha256Cksum(r) {
+			sha256sum = r.Header.Get("X-Amz-Content-Sha256")
+		}
 		// Create object.
-		objInfo, err = objectAPI.PutObject(bucket, object, size, reader, metadata)
+		objInfo, err = objectAPI.PutObject(bucket, object, size, r.Body, metadata, sha256sum)
 	}
 	if err != nil {
 		errorIf(err, "Unable to create an object.")
@@ -482,22 +513,20 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 	w.Header().Set("ETag", "\""+objInfo.MD5Sum+"\"")
 	writeSuccessResponse(w, nil)
 
-	if globalEventNotifier.IsBucketNotificationSet(bucket) {
-		// Notify object created event.
-		eventNotify(eventData{
-			Type:    ObjectCreatedPut,
-			Bucket:  bucket,
-			ObjInfo: objInfo,
-			ReqParams: map[string]string{
-				"sourceIPAddress": r.RemoteAddr,
-			},
-		})
-	}
+	// Notify object created event.
+	eventNotify(eventData{
+		Type:    ObjectCreatedPut,
+		Bucket:  bucket,
+		ObjInfo: objInfo,
+		ReqParams: map[string]string{
+			"sourceIPAddress": r.RemoteAddr,
+		},
+	})
 }
 
 /// Multipart objectAPIHandlers
 
-// NewMultipartUploadHandler - New multipart upload
+// NewMultipartUploadHandler - New multipart upload.
 func (api objectAPIHandlers) NewMultipartUploadHandler(w http.ResponseWriter, r *http.Request) {
 	var object, bucket string
 	vars := mux.Vars(r)
@@ -521,8 +550,15 @@ func (api objectAPIHandlers) NewMultipartUploadHandler(w http.ResponseWriter, r 
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -608,6 +644,7 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 
 	var partMD5 string
 	incomingMD5 := hex.EncodeToString(md5Bytes)
+	sha256sum := ""
 	switch rAuthType {
 	default:
 		// For all unknown auth types return error.
@@ -620,7 +657,7 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 			return
 		}
 		// No need to verify signature, anonymous request access is already allowed.
-		partMD5, err = objectAPI.PutObjectPart(bucket, object, uploadID, partID, size, r.Body, incomingMD5)
+		partMD5, err = objectAPI.PutObjectPart(bucket, object, uploadID, partID, size, r.Body, incomingMD5, sha256sum)
 	case authTypeStreamingSigned:
 		// Initialize stream signature verifier.
 		reader, s3Error := newSignV4ChunkedReader(r)
@@ -629,11 +666,26 @@ func (api objectAPIHandlers) PutObjectPartHandler(w http.ResponseWriter, r *http
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
-		partMD5, err = objectAPI.PutObjectPart(bucket, object, uploadID, partID, size, reader, incomingMD5)
+		partMD5, err = objectAPI.PutObjectPart(bucket, object, uploadID, partID, size, reader, incomingMD5, sha256sum)
+	case authTypeSignedV2, authTypePresignedV2:
+		s3Error := isReqAuthenticatedV2(r)
+		if s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
+		partMD5, err = objectAPI.PutObjectPart(bucket, object, uploadID, partID, size, r.Body, incomingMD5, sha256sum)
 	case authTypePresigned, authTypeSigned:
-		// Initialize signature verifier.
-		reader := newSignVerify(r)
-		partMD5, err = objectAPI.PutObjectPart(bucket, object, uploadID, partID, size, reader, incomingMD5)
+		if s3Error := reqSignatureV4Verify(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
+
+		if !skipContentSha256Cksum(r) {
+			sha256sum = r.Header.Get("X-Amz-Content-Sha256")
+		}
+		partMD5, err = objectAPI.PutObjectPart(bucket, object, uploadID, partID, size, r.Body, incomingMD5, sha256sum)
 	}
 	if err != nil {
 		errorIf(err, "Unable to create object part.")
@@ -670,8 +722,15 @@ func (api objectAPIHandlers) AbortMultipartUploadHandler(w http.ResponseWriter, 
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -710,8 +769,15 @@ func (api objectAPIHandlers) ListObjectPartsHandler(w http.ResponseWriter, r *ht
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -768,8 +834,15 @@ func (api objectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypePresigned, authTypeSigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -834,24 +907,22 @@ func (api objectAPIHandlers) CompleteMultipartUploadHandler(w http.ResponseWrite
 	w.Write(encodedSuccessResponse)
 	w.(http.Flusher).Flush()
 
-	if globalEventNotifier.IsBucketNotificationSet(bucket) {
-		// Fetch object info for notifications.
-		objInfo, err := objectAPI.GetObjectInfo(bucket, object)
-		if err != nil {
-			errorIf(err, "Unable to fetch object info for \"%s\"", path.Join(bucket, object))
-			return
-		}
-
-		// Notify object created event.
-		eventNotify(eventData{
-			Type:    ObjectCreatedCompleteMultipartUpload,
-			Bucket:  bucket,
-			ObjInfo: objInfo,
-			ReqParams: map[string]string{
-				"sourceIPAddress": r.RemoteAddr,
-			},
-		})
+	// Fetch object info for notifications.
+	objInfo, err := objectAPI.GetObjectInfo(bucket, object)
+	if err != nil {
+		errorIf(err, "Unable to fetch object info for \"%s\"", path.Join(bucket, object))
+		return
 	}
+
+	// Notify object created event.
+	eventNotify(eventData{
+		Type:    ObjectCreatedCompleteMultipartUpload,
+		Bucket:  bucket,
+		ObjInfo: objInfo,
+		ReqParams: map[string]string{
+			"sourceIPAddress": r.RemoteAddr,
+		},
+	})
 }
 
 /// Delete objectAPIHandlers
@@ -879,8 +950,15 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
 		}
+	case authTypePresignedV2, authTypeSignedV2:
+		// Signature V2 validation.
+		if s3Error := isReqAuthenticatedV2(r); s3Error != ErrNone {
+			errorIf(errSignatureMismatch, dumpRequest(r))
+			writeErrorResponse(w, r, s3Error, r.URL.Path)
+			return
+		}
 	case authTypeSigned, authTypePresigned:
-		if s3Error := isReqAuthenticated(r); s3Error != ErrNone {
+		if s3Error := isReqAuthenticated(r, serverConfig.GetRegion()); s3Error != ErrNone {
 			errorIf(errSignatureMismatch, dumpRequest(r))
 			writeErrorResponse(w, r, s3Error, r.URL.Path)
 			return
@@ -895,17 +973,15 @@ func (api objectAPIHandlers) DeleteObjectHandler(w http.ResponseWriter, r *http.
 	}
 	writeSuccessNoContent(w)
 
-	if globalEventNotifier.IsBucketNotificationSet(bucket) {
-		// Notify object deleted event.
-		eventNotify(eventData{
-			Type:   ObjectRemovedDelete,
-			Bucket: bucket,
-			ObjInfo: ObjectInfo{
-				Name: object,
-			},
-			ReqParams: map[string]string{
-				"sourceIPAddress": r.RemoteAddr,
-			},
-		})
-	}
+	// Notify object deleted event.
+	eventNotify(eventData{
+		Type:   ObjectRemovedDelete,
+		Bucket: bucket,
+		ObjInfo: ObjectInfo{
+			Name: object,
+		},
+		ReqParams: map[string]string{
+			"sourceIPAddress": r.RemoteAddr,
+		},
+	})
 }

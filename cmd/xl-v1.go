@@ -22,7 +22,6 @@ import (
 
 	"github.com/mf-00/newgo/pkg/disk"
 	"github.com/mf-00/newgo/pkg/objcache"
-	"github.com/minio/minio-go/pkg/set"
 )
 
 // XL constants.
@@ -76,7 +75,7 @@ var xlTreeWalkIgnoredErrs = []error{
 	errFaultyDisk,
 }
 
-func repairDiskMetadata(storageDisks []StorageAPI) error {
+func healFormatXL(storageDisks []StorageAPI) error {
 	// Attempt to load all `format.json`.
 	formatConfigs, sErrs := loadAllFormats(storageDisks)
 
@@ -107,52 +106,27 @@ func repairDiskMetadata(storageDisks []StorageAPI) error {
 }
 
 // newXLObjects - initialize new xl object layer.
-func newXLObjects(disks, ignoredDisks []string) (ObjectLayer, error) {
-	if disks == nil {
+func newXLObjects(storageDisks []StorageAPI) (ObjectLayer, error) {
+	if storageDisks == nil {
 		return nil, errInvalidArgument
 	}
-	disksSet := set.NewStringSet()
-	if len(ignoredDisks) > 0 {
-		disksSet = set.CreateStringSet(ignoredDisks...)
-	}
-	// Bootstrap disks.
-	storageDisks := make([]StorageAPI, len(disks))
-	for index, disk := range disks {
-		// Check if disk is ignored.
-		if disksSet.Contains(disk) {
-			storageDisks[index] = nil
-			continue
-		}
-		var err error
-		// Intentionally ignore disk not found errors. XL is designed
-		// to handle these errors internally.
-		storageDisks[index], err = newStorageAPI(disk)
-		if err != nil && err != errDiskNotFound {
-			switch diskType := storageDisks[index].(type) {
-			case networkStorage:
-				diskType.rpcClient.Close()
-			}
-			return nil, err
-		}
-	}
-
-	// Fix format files in case of fresh or corrupted disks
-	repairDiskMetadata(storageDisks)
 
 	// Runs house keeping code, like t, cleaning up tmp files etc.
 	if err := xlHouseKeeping(storageDisks); err != nil {
 		return nil, err
 	}
 
+	readQuorum := len(storageDisks) / 2
+	writeQuorum := len(storageDisks)/2 + 1
+
 	// Load saved XL format.json and validate.
-	newPosixDisks, err := loadFormatXL(storageDisks)
+	newStorageDisks, err := loadFormatXL(storageDisks, readQuorum)
 	if err != nil {
-		// errCorruptedDisk - healing failed
 		return nil, fmt.Errorf("Unable to recognize backend format, %s", err)
 	}
 
 	// Calculate data and parity blocks.
-	dataBlocks, parityBlocks := len(newPosixDisks)/2, len(newPosixDisks)/2
+	dataBlocks, parityBlocks := len(newStorageDisks)/2, len(newStorageDisks)/2
 
 	// Initialize object cache.
 	objCache := objcache.New(globalMaxCacheSize, globalCacheExpiry)
@@ -162,7 +136,7 @@ func newXLObjects(disks, ignoredDisks []string) (ObjectLayer, error) {
 
 	// Initialize xl objects.
 	xl := xlObjects{
-		storageDisks:    newPosixDisks,
+		storageDisks:    newStorageDisks,
 		dataBlocks:      dataBlocks,
 		parityBlocks:    parityBlocks,
 		listPool:        listPool,
@@ -172,8 +146,8 @@ func newXLObjects(disks, ignoredDisks []string) (ObjectLayer, error) {
 
 	// Figure out read and write quorum based on number of storage disks.
 	// READ and WRITE quorum is always set to (N/2) number of disks.
-	xl.readQuorum = len(xl.storageDisks) / 2
-	xl.writeQuorum = len(xl.storageDisks)/2 + 1
+	xl.readQuorum = readQuorum
+	xl.writeQuorum = writeQuorum
 
 	// Return successfully initialized object layer.
 	return xl, nil
@@ -185,17 +159,6 @@ func (xl xlObjects) Shutdown() error {
 	return nil
 }
 
-// HealDiskMetadata function for object storage interface.
-func (xl xlObjects) HealDiskMetadata() error {
-	// generates random string on setting MINIO_DEBUG=lock, else returns empty string.
-	// used for instrumentation on locks.
-	opsID := getOpsID()
-
-	nsMutex.Lock(minioMetaBucket, formatConfigFile, opsID)
-	defer nsMutex.Unlock(minioMetaBucket, formatConfigFile, opsID)
-	return repairDiskMetadata(xl.storageDisks)
-}
-
 // byDiskTotal is a collection satisfying sort.Interface.
 type byDiskTotal []disk.Info
 
@@ -205,36 +168,77 @@ func (d byDiskTotal) Less(i, j int) bool {
 	return d[i].Total < d[j].Total
 }
 
-// StorageInfo - returns underlying storage statistics.
-func (xl xlObjects) StorageInfo() StorageInfo {
-	var disksInfo []disk.Info
-	for _, storageDisk := range xl.storageDisks {
+// getDisksInfo - fetch disks info across all other storage API.
+func getDisksInfo(disks []StorageAPI) (disksInfo []disk.Info, onlineDisks int, offlineDisks int) {
+	disksInfo = make([]disk.Info, len(disks))
+	for i, storageDisk := range disks {
 		if storageDisk == nil {
 			// Storage disk is empty, perhaps ignored disk or not available.
+			offlineDisks++
 			continue
 		}
 		info, err := storageDisk.DiskInfo()
 		if err != nil {
 			errorIf(err, "Unable to fetch disk info for %#v", storageDisk)
+			if err == errDiskNotFound {
+				offlineDisks++
+			}
 			continue
 		}
-		disksInfo = append(disksInfo, info)
+		onlineDisks++
+		disksInfo[i] = info
 	}
 
-	// Sort so that the first element is the smallest.
-	sort.Sort(byDiskTotal(disksInfo))
+	// Success.
+	return disksInfo, onlineDisks, offlineDisks
+}
 
-	if len(disksInfo) == 0 {
+// returns sorted disksInfo slice which has only valid entries.
+// i.e the entries where the total size of the disk is not stated
+// as 0Bytes, this means that the disk is not online or ignored.
+func sortValidDisksInfo(disksInfo []disk.Info) []disk.Info {
+	var validDisksInfo []disk.Info
+	for _, diskInfo := range disksInfo {
+		if diskInfo.Total == 0 {
+			continue
+		}
+		validDisksInfo = append(validDisksInfo, diskInfo)
+	}
+	sort.Sort(byDiskTotal(validDisksInfo))
+	return validDisksInfo
+}
+
+// Get an aggregated storage info across all disks.
+func getStorageInfo(disks []StorageAPI) StorageInfo {
+	disksInfo, onlineDisks, offlineDisks := getDisksInfo(disks)
+
+	// Sort so that the first element is the smallest.
+	validDisksInfo := sortValidDisksInfo(disksInfo)
+	if len(validDisksInfo) == 0 {
 		return StorageInfo{
 			Total: -1,
 			Free:  -1,
 		}
 	}
+
 	// Return calculated storage info, choose the lowest Total and
 	// Free as the total aggregated values. Total capacity is always
 	// the multiple of smallest disk among the disk list.
-	return StorageInfo{
-		Total: disksInfo[0].Total * int64(len(xl.storageDisks)),
-		Free:  disksInfo[0].Free * int64(len(xl.storageDisks)),
+	storageInfo := StorageInfo{
+		Total: validDisksInfo[0].Total * int64(onlineDisks) / 2,
+		Free:  validDisksInfo[0].Free * int64(onlineDisks) / 2,
 	}
+
+	storageInfo.Backend.Type = XL
+	storageInfo.Backend.OnlineDisks = onlineDisks
+	storageInfo.Backend.OfflineDisks = offlineDisks
+	return storageInfo
+}
+
+// StorageInfo - returns underlying storage statistics.
+func (xl xlObjects) StorageInfo() StorageInfo {
+	storageInfo := getStorageInfo(xl.storageDisks)
+	storageInfo.Backend.ReadQuorum = xl.readQuorum
+	storageInfo.Backend.WriteQuorum = xl.writeQuorum
+	return storageInfo
 }

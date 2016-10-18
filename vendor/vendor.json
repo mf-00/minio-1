@@ -73,9 +73,22 @@
 			"revisionTime": "2016-01-06T11:44:51+01:00"
 		},
 		{
+			"checksumSHA1": "XRii0aDqXZvztXflEB2EE9TRoks=",
 			"path": "github.com/klauspost/reedsolomon",
-			"revision": "467733eb9c209042fb37d2074a5b6be33a529be0",
-			"revisionTime": "2016-07-06T21:06:00+02:00"
+			"revision": "c54154da9e35cab25232314cf69ab9d78447f9a5",
+			"revisionTime": "2016-09-12T19:31:07Z"
+		},
+		{
+			"checksumSHA1": "dNYxHiBLalTqluak2/Z8c3RsSEM=",
+			"path": "github.com/lib/pq",
+			"revision": "50761b0867bd1d9d069276790bcd4a3bccf2324a",
+			"revisionTime": "2016-08-31T22:25:20Z"
+		},
+		{
+			"checksumSHA1": "xppHi82MLqVx1eyQmbhTesAEjx8=",
+			"path": "github.com/lib/pq/oid",
+			"revision": "50761b0867bd1d9d069276790bcd4a3bccf2324a",
+			"revisionTime": "2016-08-31T22:25:20Z"
 		},
 		{
 			"path": "github.com/mattn/go-colorable",
@@ -98,10 +111,10 @@
 			"revisionTime": "2015-11-18T20:00:48-08:00"
 		},
 		{
-			"checksumSHA1": "0wc4gxRamjyjVSiZF73KIaCRC6k=",
+			"checksumSHA1": "UWpLeW+oLfe/MiphMckp1HqKrW0=",
 			"path": "github.com/minio/dsync",
-			"revision": "531818cd6458e24e30eec2c67136a8bcb24520af",
-			"revisionTime": "2016-09-15T18:37:01Z"
+			"revision": "fcea3bf5533c1b8a5af3cb377d30363782d2532d",
+			"revisionTime": "2016-10-15T15:40:54Z"
 		},
 		{
 			"path": "github.com/minio/go-homedir",
@@ -136,6 +149,24 @@
 			"path": "github.com/minio/sha256-simd",
 			"revision": "6f50cd1d784b2bea46167b6929f16c0d12eefbfb",
 			"revisionTime": "2016-08-16T22:25:11Z"
+		},
+		{
+			"checksumSHA1": "Nj7vQ2GlvJiPP7sqJX5AurrDSD4=",
+			"path": "github.com/nats-io/nats",
+			"revision": "70b70be17b77e8da86b6a3bcfe94fb22718a8dd0",
+			"revisionTime": "2016-09-16T18:17:35Z"
+		},
+		{
+			"checksumSHA1": "qAIuHdtQrDi2fFmpaP1dZLbgpGc=",
+			"path": "github.com/nats-io/nats/encoders/builtin",
+			"revision": "70b70be17b77e8da86b6a3bcfe94fb22718a8dd0",
+			"revisionTime": "2016-09-16T18:17:35Z"
+		},
+		{
+			"checksumSHA1": "i8Yom1KrpDKwjlGH/gpJGAQmo68=",
+			"path": "github.com/nats-io/nuid",
+			"revision": "289cccf02c178dc782430d534e3c1f5b72af807f",
+			"revisionTime": "2016-09-27T04:49:45Z"
 		},
 		{
 			"path": "github.com/pkg/profile",
@@ -175,6 +206,12 @@
 			"path": "github.com/tidwall/match",
 			"revision": "173748da739a410c5b0b813b956f89ff94730b4c",
 			"revisionTime": "2016-08-30T17:39:30Z"
+		},
+		{
+			"checksumSHA1": "hMj8vjbjGCAE368E3xAjZGFON+E=",
+			"path": "github.com/urfave/negroni",
+			"revision": "3f7ce7b928e14ff890b067e5bbbc80af73690a9c",
+			"revisionTime": "2016-09-09T03:51:52Z"
 		},
 		{
 			"path": "golang.org/x/crypto/bcrypt",

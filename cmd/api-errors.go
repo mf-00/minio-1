@@ -617,6 +617,8 @@ func toAPIErrorCode(err error) (apiErr APIErrorCode) {
 		apiErr = ErrNoSuchUpload
 	case PartTooSmall:
 		apiErr = ErrEntityTooSmall
+	case SHA256Mismatch:
+		apiErr = ErrContentSHA256Mismatch
 	default:
 		apiErr = ErrInternalError
 	}
@@ -642,8 +644,4 @@ func getAPIErrorResponse(err APIError, resource string) APIErrorResponse {
 	data.HostID = "3L137"
 
 	return data
-}
-
-func getErrMalformedCredentialDate(malformedDateStr string) {
-
 }

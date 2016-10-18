@@ -62,8 +62,9 @@ func testListObjects(obj ObjectLayer, instanceType string, t TestErrHandler) {
 		{"obj1", "obj1"},
 		{"obj2", "obj2"},
 	}
+	sha256sum := ""
 	for _, object := range testObjects {
-		_, err = obj.PutObject(testBuckets[0], object.name, int64(len(object.content)), bytes.NewBufferString(object.content), nil)
+		_, err = obj.PutObject(testBuckets[0], object.name, int64(len(object.content)), bytes.NewBufferString(object.content), nil, sha256sum)
 		if err != nil {
 			t.Fatalf("%s : %s", instanceType, err.Error())
 		}
@@ -514,7 +515,7 @@ func testListObjects(obj ObjectLayer, instanceType string, t TestErrHandler) {
 		{"test-bucket-list-object", "/", "", "/", 10, resultCases[30], nil, true},
 
 		// Test with invalid prefix (61)
-		{"test-bucket-list-object", "^", "", "/", 10, resultCases[30], ObjectNameInvalid{Bucket: "test-bucket-list-object", Object: "^"}, false},
+		{"test-bucket-list-object", "\\", "", "/", 10, resultCases[30], ObjectNameInvalid{Bucket: "test-bucket-list-object", Object: "\\"}, false},
 	}
 
 	for i, testCase := range testCases {
@@ -563,6 +564,18 @@ func testListObjects(obj ObjectLayer, instanceType string, t TestErrHandler) {
 	}
 }
 
+func initFSObjectsB(disk string, t *testing.B) (obj ObjectLayer) {
+	storageDisks, err := initStorageDisks([]string{disk}, nil)
+	if err != nil {
+		t.Fatal("Unexpected err: ", err)
+	}
+	obj, err = newFSObjects(storageDisks[0])
+	if err != nil {
+		t.Fatal("Unexpected err: ", err)
+	}
+	return obj
+}
+
 func BenchmarkListObjects(b *testing.B) {
 	// Make a temporary directory to use as the obj.
 	directory, err := ioutil.TempDir("", "minio-list-benchmark")
@@ -572,10 +585,7 @@ func BenchmarkListObjects(b *testing.B) {
 	defer removeAll(directory)
 
 	// Create the obj.
-	obj, err := newFSObjects(directory)
-	if err != nil {
-		b.Fatal(err)
-	}
+	obj := initFSObjectsB(directory, b)
 
 	// Create a bucket.
 	err = obj.MakeBucket("ls-benchmark-bucket")
@@ -583,9 +593,10 @@ func BenchmarkListObjects(b *testing.B) {
 		b.Fatal(err)
 	}
 
+	sha256sum := ""
 	for i := 0; i < 20000; i++ {
 		key := "obj" + strconv.Itoa(i)
-		_, err = obj.PutObject("ls-benchmark-bucket", key, int64(len(key)), bytes.NewBufferString(key), nil)
+		_, err = obj.PutObject("ls-benchmark-bucket", key, int64(len(key)), bytes.NewBufferString(key), nil, sha256sum)
 		if err != nil {
 			b.Fatal(err)
 		}

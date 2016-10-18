@@ -22,7 +22,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // Validates location constraint in PutBucket request body.
@@ -33,34 +32,29 @@ func isValidLocationConstraint(r *http.Request) (s3Error APIErrorCode) {
 	// If the request has no body with content-length set to 0,
 	// we do not have to validate location constraint. Bucket will
 	// be created at default region.
-	if r.ContentLength == 0 {
-		return ErrNone
-	}
 	locationConstraint := createBucketLocationConfiguration{}
-	if err := xmlDecoder(r.Body, &locationConstraint, r.ContentLength); err != nil {
-		if err == io.EOF && r.ContentLength == -1 {
-			// EOF is a valid condition here when ContentLength is -1.
-			return ErrNone
+	err := xmlDecoder(r.Body, &locationConstraint, r.ContentLength)
+	if err == nil || err == io.EOF {
+		// Successfully decoded, proceed to verify the region.
+		// Once region has been obtained we proceed to verify it.
+		incomingRegion := locationConstraint.Location
+		if incomingRegion == "" {
+			// Location constraint is empty for region "us-east-1",
+			// in accordance with protocol.
+			incomingRegion = defaultRegion
 		}
-		errorIf(err, "Unable to xml decode location constraint")
-		// Treat all other failures as XML parsing errors.
-		return ErrMalformedXML
-	} // Successfully decoded, proceed to verify the region.
 
-	// Once region has been obtained we proceed to verify it.
-	incomingRegion := locationConstraint.Location
-	if incomingRegion == "" {
-		// Location constraint is empty for region "us-east-1",
-		// in accordance with protocol.
-		incomingRegion = defaultRegion
+		// Return errInvalidRegion if location constraint does not match
+		// with configured region.
+		s3Error = ErrNone
+		if serverRegion != incomingRegion {
+			s3Error = ErrInvalidRegion
+		}
+		return s3Error
 	}
-	// Return errInvalidRegion if location constraint does not match
-	// with configured region.
-	s3Error = ErrNone
-	if serverRegion != incomingRegion {
-		s3Error = ErrInvalidRegion
-	}
-	return s3Error
+	errorIf(err, "Unable to xml decode location constraint")
+	// Treat all other failures as XML parsing errors.
+	return ErrMalformedXML
 }
 
 // Supported headers that needs to be extracted.
@@ -129,17 +123,4 @@ func extractPostPolicyFormValues(reader *multipart.Reader) (filePart io.Reader, 
 		}
 	}
 	return filePart, fileName, formValues, nil
-}
-
-// Send whitespace character, once every 5secs, until CompleteMultipartUpload is done.
-// CompleteMultipartUpload method of the object layer indicates that it's done via doneCh
-func sendWhiteSpaceChars(w http.ResponseWriter, doneCh <-chan struct{}) {
-	for {
-		select {
-		case <-time.After(5 * time.Second):
-			w.Write([]byte(" "))
-		case <-doneCh:
-			return
-		}
-	}
 }
